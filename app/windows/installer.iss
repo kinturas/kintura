@@ -37,12 +37,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Reste aus der Zeit, als die App Homeboard hieß. Das Update landet im alten Ordner.
-[InstallDelete]
-Type: files; Name: "{app}\homeboard.exe"
-Type: files; Name: "{autoprograms}\Homeboard.lnk"
-Type: files; Name: "{autodesktop}\Homeboard.lnk"
-
 [Icons]
 Name: "{autoprograms}\Kintura"; Filename: "{app}\kintura.exe"
 Name: "{autodesktop}\Kintura"; Filename: "{app}\kintura.exe"; Tasks: desktopicon

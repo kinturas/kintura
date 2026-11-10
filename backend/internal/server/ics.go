@@ -614,7 +614,7 @@ func renderICS(name string, entries []icsEntry) string {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	for _, entry := range entries {
 		writeICSLine(&out, "BEGIN:VEVENT")
-		writeICSLine(&out, "UID:"+entry.uid+"@homeboard")
+		writeICSLine(&out, "UID:"+entry.uid+"@kintura")
 		writeICSLine(&out, "DTSTAMP:"+stamp)
 		if entry.allDay {
 			writeICSLine(&out, "DTSTART;VALUE=DATE:"+entry.start.Format("20060102"))

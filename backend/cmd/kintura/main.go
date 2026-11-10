@@ -35,34 +35,12 @@ func openDatabase(ctx context.Context, dataDir string) (*database.DB, error) {
 		if err := os.MkdirAll(dataDir, 0o700); err != nil {
 			return nil, err
 		}
-		if err := renameOldDatabase(dataDir, path); err != nil {
-			return nil, err
-		}
 	}
 	return database.Open(ctx, database.Config{
 		Driver: driver,
 		Path:   path,
 		URL:    os.Getenv("DATABASE_URL"),
 	})
-}
-
-// renameOldDatabase takes over the file from when the app was called Homeboard,
-// together with the journal files SQLite keeps next to it.
-func renameOldDatabase(dataDir, path string) error {
-	old := filepath.Join(dataDir, "homeboard.db")
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-	if _, err := os.Stat(old); err != nil {
-		return nil
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Rename(old+suffix, path+suffix); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	log.Printf("Datenbank %s nach %s umbenannt", old, path)
-	return nil
 }
 
 func openStorage(ctx context.Context, dataDir string) (storage.Store, error) {
