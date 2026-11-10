@@ -1,0 +1,19 @@
+# Live-Reload fürs Backend: https://github.com/air-verse/air
+root = "."
+tmp_dir = "tmp"
+env_files = [".env", "../.env"]
+
+[build]
+cmd = "go build -o ./tmp/main ./cmd/kintura"
+entrypoint = ["./tmp/main"]
+include_ext = ["go", "html", "js", "css", "sql"]
+exclude_dir = ["data", "tmp"]
+exclude_regex = ["_test\\.go"]
+stop_on_error = true
+
+[build.windows]
+cmd = "go build -o ./tmp/main.exe ./cmd/kintura"
+entrypoint = ["tmp\\main.exe"]
+
+[misc]
+clean_on_exit = true

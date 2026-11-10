@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="de" data-repo="__REPO_URL__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'">
+  <title>Kintura – der gemeinsame Alltag an einem Ort</title>
+  <meta name="description" content="Kalender, Aufgaben, Listen, Essensplan und Dokumente für Familie, Freundeskreis, Verwandtschaft oder Arbeitsgruppe. Im Browser, auf Android und unter Windows.">
+  <meta name="theme-color" content="#2e6b57">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="#start"><img src="favicon.svg" alt="" width="28" height="28">Kintura</a>
+      <nav aria-label="Hauptmenü">
+        <a class="nav-link" href="#funktionen">Funktionen</a>
+        <a class="nav-link" href="#download">Download</a>
+        <a class="button small" href="__APP_URL__">Anmelden</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="start">
+    <section class="hero wrap">
+      <div>
+        <p class="eyebrow">Für Familie, Freunde und alle, die zusammen planen</p>
+        <h1>Der gemeinsame Alltag an einem Ort.</h1>
+        <p class="lede">Termine, Aufgaben, Listen, Essensplan und wichtige Dokumente. Alle in deinem Kreis sehen dasselbe, und niemand muss mehr nachfragen, wer wann wo sein muss.</p>
+        <div class="actions">
+          <a class="button" href="__APP_URL__">Anmelden</a>
+          <a class="button ghost" href="#download">App herunterladen</a>
+        </div>
+      </div>
+
+      <div class="preview" aria-hidden="true">
+        <div class="preview-head"><span>Diese Woche</span><span class="preview-kreis">Familie</span></div>
+        <ol class="agenda">
+          <li><span class="day">Mo<b>12</b></span><div><p class="event c1"><time>08:30</time>Zahnarzt</p><p class="event c2"><time>16:00</time>Fußballtraining</p></div></li>
+          <li><span class="day">Mi<b>14</b></span><div><p class="event c3">Elternabend</p></div></li>
+          <li><span class="day">Fr<b>16</b></span><div><p class="event c4">Omas Geburtstag</p><p class="event c5">Letzter Schultag</p></div></li>
+          <li><span class="day">Sa<b>17</b></span><div><p class="event c2"><time>10:00</time>Wochenmarkt</p></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="funktionen" class="band">
+      <div class="wrap">
+        <h2>Was Kintura kann</h2>
+
+        <div class="lead-features">
+          <article>
+            <h3>Ein Kalender, den alle verstehen</h3>
+            <p>Tagebuch, Tag, drei Tage, Woche oder Monat. Termine mit Wiederholung, Ort, Anhängen und Erinnerung per Mail. Farben nach Person und Kategorie zeigen sofort, wen es betrifft.</p>
+          </article>
+          <article>
+            <h3>Ferien und Geburtstage kommen von selbst</h3>
+            <p>Schulferien, Feiertage und Geburtstage stehen automatisch im Kalender. Andere Kalender bindest du per Link ein, deinen eigenen kannst du als Abo weitergeben.</p>
+          </article>
+        </div>
+
+        <ul class="features">
+          <li><h3>Aufgaben und Listen</h3><p>Gemeinsame Listen für alle im Kreis. Geplante Aufgaben erscheinen auch im Kalender.</p></li>
+          <li><h3>Essensplan</h3><p>Festhalten, was es an welchem Tag zu essen gibt.</p></li>
+          <li><h3>Nachrichten</h3><p>Kurze Mitteilungen an alle im Kreis, ohne Gruppenchat nebenher.</p></li>
+          <li><h3>Dokumente</h3><p>Wichtige Dateien an einem Ort, nur für Mitglieder eures Kreises.</p></li>
+          <li><h3>Besondere Tage</h3><p>Jahrestage und alles andere, worauf ihr euch freut, mit Countdown.</p></li>
+          <li><h3>Mehrere Kreise</h3><p>Familie, Freundeskreis, Verwandtschaft oder Arbeitsgruppe, jeweils getrennt voneinander.</p></li>
+          <li><h3>Auch für Kinder</h3><p>Eigene Rolle für Kinder, und kleine Kinder brauchen nicht einmal eine E-Mail-Adresse.</p></li>
+          <li><h3>Ohne Passwort</h3><p>Anmeldung mit Code oder Link per Mail. Es gibt nichts, was man sich merken muss.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="download" class="wrap downloads">
+      <h2>Überall dabei</h2>
+      <p class="section-lede">Im Browser sofort startklar, auf dem Handy und am PC als eigene App.</p>
+
+      <div class="platforms">
+        <article class="platform">
+          <h3>Im Browser</h3>
+          <p class="status">Keine Installation nötig, immer die neueste Version.</p>
+          <a class="button" href="__APP_URL__">Anmelden</a>
+        </article>
+
+        <article class="platform" data-platform="android" data-extension=".apk">
+          <h3>Android</h3>
+          <p class="status" data-status>Downloads werden geladen …</p>
+          <a class="button" data-download hidden>APK herunterladen</a>
+          <p class="hint">Beim ersten Mal fragt Android, ob die Installation aus dieser Quelle erlaubt ist.</p>
+          <details data-older hidden><summary>Frühere Versionen</summary><ul class="versions"></ul></details>
+        </article>
+
+        <article class="platform" data-platform="windows" data-extension=".exe">
+          <h3>Windows</h3>
+          <p class="status" data-status>Downloads werden geladen …</p>
+          <a class="button" data-download hidden>Installer herunterladen</a>
+          <p class="hint">Falls Windows warnt: „Weitere Informationen“ und dann „Trotzdem ausführen“ wählen.</p>
+          <details data-older hidden><summary>Frühere Versionen</summary><ul class="versions"></ul></details>
+        </article>
+      </div>
+
+      <noscript><p class="section-lede">Die Downloads brauchen JavaScript.</p></noscript>
+      <p class="all-releases"><a href="__REPO_URL__/releases">Alle Versionen auf GitHub</a></p>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <span>© 2026 Kintura</span>
+    <div class="foot-links">
+      <a href="__APP_URL__">Anmelden</a>
+      <a href="impressum.html">Impressum</a>
+      <a href="datenschutz.html">Datenschutz</a>
+    </div>
+  </footer>
+</body>
+</html>

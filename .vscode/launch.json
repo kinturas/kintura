@@ -1,0 +1,72 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "App (Chrome)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "deviceId": "chrome",
+            "toolArgs": ["--web-port", "5000", "--dart-define=APP_URL=http://localhost:1316"]
+        },
+        {
+            "name": "App (Windows)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "deviceId": "windows",
+            "toolArgs": ["--dart-define=APP_URL=http://localhost:1316"]
+        },
+        {
+            "name": "App (macOS)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "deviceId": "macos",
+            "toolArgs": ["--dart-define=APP_URL=http://localhost:1316"]
+        },
+        {
+            "name": "App (Linux)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "deviceId": "linux",
+            "toolArgs": ["--dart-define=APP_URL=http://localhost:1316"]
+        },
+        {
+            "name": "Backend",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/backend/cmd/kintura",
+            "cwd": "${workspaceFolder}/backend",
+            "envFile": "${workspaceFolder}/backend/.env"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Backend + App (Chrome)",
+            "configurations": ["Backend", "App (Chrome)"],
+            "stopAll": true
+        },
+        {
+            "name": "Backend + App (Windows)",
+            "configurations": ["Backend", "App (Windows)"],
+            "stopAll": true
+        },
+        {
+            "name": "Backend + App (macOS)",
+            "configurations": ["Backend", "App (macOS)"],
+            "stopAll": true
+        },
+        {
+            "name": "Backend + App (Linux)",
+            "configurations": ["Backend", "App (Linux)"],
+            "stopAll": true
+        }
+    ]
+}

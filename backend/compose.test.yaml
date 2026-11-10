@@ -1,0 +1,28 @@
+# Dienste für make test-integration: Die Tests laufen dann gegen Postgres und ein S3 statt
+# gegen SQLite und das lokale Dateisystem. Die Daten sind nach dem Beenden weg.
+name: kintura-test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: kintura
+      POSTGRES_PASSWORD: kintura
+      POSTGRES_DB: kintura
+    ports:
+      - "55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kintura"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  s3:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: kintura
+      RUSTFS_SECRET_KEY: kintura-secret
+    ports:
+      - "59000:9000"

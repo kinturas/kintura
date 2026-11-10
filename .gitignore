@@ -1,0 +1,15 @@
+# Backend data: database and uploaded family files
+backend/data/
+backend/*.exe
+# Air build output
+backend/tmp/
+# Backend build output
+backend/bin/
+backend/apk/
+# APKs aus make build-android
+builds/
+tmp.txt
+backend/.env
+.env
+.env.my
+tmp

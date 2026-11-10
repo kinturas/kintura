@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Kintura Admin</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<main id="login" class="card narrow" hidden>
+  <h1>Kintura Admin</h1>
+  <form id="email-form">
+    <p>Gib deine E-Mail-Adresse ein. Du bekommst einen Code und einen Link zum Anmelden.</p>
+    <label for="email">E-Mail-Adresse</label>
+    <input id="email" type="email" autocomplete="email" required>
+    <button type="submit">Weiter</button>
+  </form>
+  <form id="code-form" hidden>
+    <p>Wir haben dir eine Mail an <strong id="sent-to"></strong> geschickt. Gib den Code ein oder bestätige den Link in der Mail.</p>
+    <label for="code">Code</label>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+    <button type="submit">Anmelden</button>
+    <button type="button" id="code-back" class="plain">Andere Adresse verwenden</button>
+  </form>
+  <p id="login-error" class="error" role="alert" hidden></p>
+</main>
+
+<main id="activate" class="card narrow" hidden>
+  <h1>Dashboard freischalten</h1>
+  <p>Gib einmalig den API-Token ein, mit dem das Backend gestartet wurde (<code>ADMIN_API_KEY</code>).</p>
+  <p id="key-missing" class="error" hidden>Am Backend ist kein gültiger <code>ADMIN_API_KEY</code> gesetzt (mindestens 16 Zeichen). Setze ihn und starte das Backend neu.</p>
+  <form id="key-form">
+    <label for="key">API-Token</label>
+    <input id="key" type="password" autocomplete="off" required>
+    <button type="submit">Freischalten</button>
+  </form>
+  <p id="key-error" class="error" role="alert" hidden></p>
+  <button type="button" class="plain logout">Abmelden</button>
+</main>
+
+<main id="denied" class="card narrow" hidden>
+  <h1>Kein Zugriff</h1>
+  <p>Dieses Dashboard ist dem Sysadmin vorbehalten.</p>
+  <button type="button" class="plain logout">Abmelden</button>
+</main>
+
+<div id="board" hidden>
+  <header>
+    <strong>Kintura Admin</strong>
+    <nav>
+      <button type="button" data-view="families" aria-current="page">Kreise</button>
+      <button type="button" data-view="users">Mitglieder</button>
+      <button type="button" data-view="pages">Seiten</button>
+      <button type="button" data-view="log">Log</button>
+    </nav>
+    <span id="who"></span>
+    <button type="button" class="plain logout">Abmelden</button>
+  </header>
+  <main>
+    <p id="board-error" class="error" role="alert" hidden></p>
+    <section id="families" hidden></section>
+    <section id="users" hidden></section>
+    <section id="pages" hidden></section>
+    <section id="log" hidden>
+      <div class="title-row">
+        <h2>Log</h2>
+        <button type="button" id="log-refresh" class="plain">Aktualisieren</button>
+      </div>
+      <div id="log-table"></div>
+      <button type="button" id="log-more" class="plain" hidden>Ältere laden</button>
+    </section>
+  </main>
+</div>
+<script src="/admin/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Website lokal testen, aus diesem Ordner: docker compose --env-file ../.env up --build
+# Die Werte kommen aus der .env im Hauptordner, siehe .env.example.
+name: kintura-website
+
+services:
+  website:
+    image: kintura-website
+    build:
+      context: .
+      args:
+        APP_URL: ${APP_URL:-http://localhost:1316}
+        REPO_URL: ${REPO_URL:?fehlt, mit --env-file ../.env starten}
+    ports:
+      - "8088:80"
+    # Ganzer Inhalt von Impressum und Datenschutz als Markdown. Leer bleiben die Dateien
+    # aus website/content. Direkt hier geht auch mehrzeilig:
+    #   CONTENT_IMPRESSUM: |
+    #     # Impressum
+    #     ...
+    environment:
+      CONTENT_IMPRESSUM: ${CONTENT_IMPRESSUM:-}
+      CONTENT_DATENSCHUTZ: ${CONTENT_DATENSCHUTZ:-}

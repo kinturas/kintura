@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Kintura Admin</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<main class="card narrow">
+  <form id="token-form">
+    <label for="token">API-Token</label>
+    <input id="token" type="password" autocomplete="off" required autofocus>
+    <button type="submit">Anmelden</button>
+  </form>
+  <p id="token-error" class="error" role="alert" hidden></p>
+</main>
+<script src="/admin/token.js"></script>
+</body>
+</html>

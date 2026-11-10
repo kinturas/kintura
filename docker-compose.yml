@@ -1,0 +1,15 @@
+# Zum Testen des Dockerfiles: docker compose up --build
+# APP_URL kommt aus der .env im Hauptordner.
+services:
+  kintura:
+    build:
+      context: .
+    ports:
+      - "1316:8080"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-${APP_URL:-http://localhost:1316}}
+    volumes:
+      - kintura-data:/data
+
+volumes:
+  kintura-data:

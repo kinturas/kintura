@@ -1,0 +1,178 @@
+# Gestartet von make deploy, deploy-android und deploy-windows, siehe README.
+name: Deploy
+
+on:
+  push:
+    tags:
+      - "web-v*"
+      - "android-v*"
+      - "windows-v*"
+      - "website-v*"
+
+env:
+  IMAGE: ghcr.io/kinturas/kintura
+  APP_URL: ${{ vars.APP_URL }}
+
+jobs:
+  web:
+    if: startsWith(github.ref_name, 'web-v')
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Version bestimmen
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME##*-v}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            BUILD_NUMBER=${{ env.BUILD_NUMBER }}
+
+  android:
+    if: startsWith(github.ref_name, 'android-v')
+    runs-on: self-hosted
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version bestimmen
+        run: |
+          build="${GITHUB_REF_NAME#*-v}"
+          echo "VERSION=${build%-*}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${build##*-}" >> "$GITHUB_ENV"
+      - name: APP_URL prüfen
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
+            exit 1
+          fi
+      - name: Release-Schlüssel bereitstellen
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PROPERTIES: ${{ secrets.ANDROID_KEY_PROPERTIES }}
+        run: |
+          if [ -z "$KEYSTORE" ] || [ -z "$PROPERTIES" ]; then
+            echo "::error::Die Secrets ANDROID_KEYSTORE_BASE64 und ANDROID_KEY_PROPERTIES fehlen, siehe README."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          printf '%s\n' "$PROPERTIES" > "$RUNNER_TEMP/key.properties"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: apk
+          secret-files: |
+            android_keystore=${{ runner.temp }}/release.keystore
+            android_key_properties=${{ runner.temp }}/key.properties
+          outputs: type=local,dest=${{ runner.temp }}/apk
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            BUILD_NUMBER=${{ env.BUILD_NUMBER }}
+            APP_URL=${{ env.APP_URL }}
+      - name: APK als GitHub-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/apk/kintura-$VERSION-$BUILD_NUMBER.apk" --title "Android $VERSION" --generate-notes
+
+  windows:
+    if: startsWith(github.ref_name, 'windows-v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version bestimmen
+        run: |
+          build="${GITHUB_REF_NAME#*-v}"
+          echo "VERSION=${build%-*}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${build##*-}" >> "$GITHUB_ENV"
+      - name: APP_URL prüfen
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
+            exit 1
+          fi
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+      - name: Windows-App bauen
+        working-directory: app
+        run: flutter build windows --release --build-name="$VERSION" --build-number="$BUILD_NUMBER" --dart-define=APP_URL="$APP_URL"
+      - name: Inno Setup installieren
+        run: choco install innosetup --no-progress -y
+      - name: Installer bauen
+        shell: pwsh
+        run: app/windows/build-installer.ps1 -Version $env:VERSION -Build $env:BUILD_NUMBER
+      - name: Als GitHub-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" "builds/kintura-$VERSION-$BUILD_NUMBER-windows-setup.exe" --title "Windows $VERSION" --generate-notes
+
+  # Veröffentlicht website/ als GitHub Pages. Läuft auch nach jedem App-Release, damit die
+  # Download-Links aktuell bleiben. Einmalig: Settings, Pages, Source auf "GitHub Actions".
+  website:
+    needs: [android, windows]
+    if: >-
+      !cancelled() && !contains(needs.*.result, 'failure') && !startsWith(github.ref_name, 'web-v')
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      REPO_URL: ${{ vars.REPO_URL || format('{0}/{1}', github.server_url, github.repository) }}
+      CONTENT_IMPRESSUM: ${{ vars.CONTENT_IMPRESSUM }}
+      CONTENT_DATENSCHUTZ: ${{ vars.CONTENT_DATENSCHUTZ }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Repository-Variablen prüfen
+        run: |
+          for name in APP_URL CONTENT_IMPRESSUM CONTENT_DATENSCHUTZ; do
+            if [ -z "$(printenv "$name")" ]; then
+              echo "::error::Die Repository-Variable $name fehlt (Settings, Secrets and variables, Actions, Variables)."
+              exit 1
+            fi
+          done
+      - name: Seite zusammenstellen
+        run: |
+          rm -rf "${RUNNER_TEMP:?}/site"
+          cp -r website/public "$RUNNER_TEMP/site"
+          cp -r website/content "$RUNNER_TEMP/site/content"
+          sed -i -e "s|__APP_URL__|$APP_URL|g" -e "s|__REPO_URL__|$REPO_URL|g" "$RUNNER_TEMP/site/index.html"
+          # Impressum und Datenschutz aus den Repository-Variablen statt der Beispieldaten.
+          CONTENT_DIR="$RUNNER_TEMP/site/content" sh website/content-from-env.sh
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+      - id: deploy
+        uses: actions/deploy-pages@v4
