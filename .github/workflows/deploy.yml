@@ -16,7 +16,7 @@ env:
 jobs:
   web:
     if: startsWith(github.ref_name, 'web-v')
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -48,7 +48,7 @@ jobs:
 
   android:
     if: startsWith(github.ref_name, 'android-v')
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -138,7 +138,7 @@ jobs:
     needs: [android, windows]
     if: >-
       !cancelled() && !contains(needs.*.result, 'failure') && !startsWith(github.ref_name, 'web-v')
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: write
