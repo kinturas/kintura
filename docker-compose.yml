@@ -7,7 +7,7 @@ services:
     ports:
       - "1316:8080"
     environment:
-      PUBLIC_URL: ${PUBLIC_URL:-${APP_URL:-http://localhost:1316}}
+      APP_URL: ${APP_URL:-http://localhost:1316}
     volumes:
       - kintura-data:/data
 

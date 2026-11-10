@@ -40,7 +40,7 @@ in `builds` ab. Das läuft ohne Docker und nur unter Windows mit lokalem Flutter
 `make build-windows-installer` legt dort zusätzlich einen Installer als einzelne Datei ab und braucht Inno Setup (`winget install JRSoftware.InnoSetup`).
 
 ```powershell
-docker run -p 1316:8080 -v kintura-data:/data -e PUBLIC_URL=http://192.168.1.10:1316 kintura:1.0.0
+docker run -p 1316:8080 -v kintura-data:/data -e APP_URL=http://192.168.1.10:1316 kintura:1.0.0
 ```
 
 Die Web-App liegt unter `/` und spricht mit demselben Server. Datenbank und Dateien liegen im Volume unter `/data`.
@@ -149,7 +149,7 @@ Get-Content app/android/key.properties -Raw | Set-Clipboard
 | `S3_ACCESS_KEY`, `S3_SECRET_KEY` | | Zugangsdaten; ohne sie gilt die Rolle der Maschine (AWS IAM) |
 | `S3_PREFIX` | | Ordner im Bucket, für mehrere Installationen in einem Bucket |
 | `S3_PATH_STYLE` | `false` | `true` für Dienste ohne Bucket-Subdomains |
-| `PUBLIC_URL` | `http://localhost:8080` | Basis für Links in Mails und Downloads |
+| `APP_URL` | `http://localhost:8080` | Basis für Links in Mails und Downloads |
 | `CORS_ORIGIN` | `*` | Erlaubter Ursprung der Web-App |
 | `SMTP_HOST`, `SMTP_PORT` | Port `587` | Mailserver (Port 465 nutzt direktes TLS) |
 | `SMTP_USER`, `SMTP_PASS` | | Zugangsdaten |

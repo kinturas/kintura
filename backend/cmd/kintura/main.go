@@ -99,7 +99,7 @@ func main() {
 		Files:      files,
 		Mailer:     openMailer(),
 		Timezone:   os.Getenv("DEFAULT_TIMEZONE"),
-		PublicURL:  strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
+		PublicURL:  strings.TrimRight(env("APP_URL", "http://localhost:8080"), "/"),
 		CORSOrigin: env("CORS_ORIGIN", "*"),
 		AdminKey:   os.Getenv("ADMIN_API_KEY"),
 		Version:    version,
