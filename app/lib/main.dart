@@ -6,6 +6,7 @@ import 'api.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'session.dart';
+import 'update_check.dart';
 
 const seedColor = Color(0xFF2E6B57);
 
@@ -15,17 +16,22 @@ const maxPageWidth = 960.0;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('de');
-  final session = AppSession(api: ApiClient(), tokens: SecureTokenStore(), themes: SecureThemeStore());
+  final api = ApiClient();
+  final session = AppSession(api: api, tokens: SecureTokenStore(), themes: SecureThemeStore());
   // Before the first frame, or the app would start in the wrong design.
   await session.loadThemeMode();
   session.start();
-  runApp(KinturaApp(session: session));
+  final updates = UpdateCheck(api: api)..start();
+  runApp(KinturaApp(session: session, updates: updates));
 }
 
 class KinturaApp extends StatelessWidget {
-  const KinturaApp({super.key, required this.session});
+  const KinturaApp({super.key, required this.session, this.updates});
 
   final AppSession session;
+
+  /// Shows a bar once the server runs a newer web build, see [UpdateCheck].
+  final UpdateCheck? updates;
 
   ThemeData _theme(Brightness brightness) => ThemeData(
     colorScheme: ColorScheme.fromSeed(
@@ -52,15 +58,19 @@ class KinturaApp extends StatelessWidget {
           locale: const Locale('de'),
           supportedLocales: const [Locale('de')],
           localizationsDelegates: GlobalMaterialLocalizations.delegates,
-          builder: (context, child) => ColoredBox(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: maxPageWidth),
-                child: child,
+          builder: (context, child) {
+            final page = ColoredBox(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: maxPageWidth),
+                  child: child,
+                ),
               ),
-            ),
-          ),
+            );
+            final check = updates;
+            return check == null ? page : UpdateBanner(check: check, child: page);
+          },
           home: const _Root(),
         ),
       ),

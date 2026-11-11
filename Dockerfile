@@ -15,10 +15,11 @@ RUN flutter pub get
 COPY app/ ./
 
 # Leeres APP_URL: Die Web-App spricht mit dem Server, der sie ausgeliefert hat.
+# APP_VERSION wie bei GET /api/version, damit offene Tabs ein Update bemerken.
 FROM flutter AS web
 ARG VERSION
 ARG BUILD_NUMBER
-RUN flutter build web --release --build-name=$VERSION --build-number=$BUILD_NUMBER --dart-define=APP_URL=
+RUN flutter build web --release --build-name=$VERSION --build-number=$BUILD_NUMBER --dart-define=APP_URL= --dart-define=APP_VERSION=$VERSION+$BUILD_NUMBER
 
 FROM flutter AS android
 ARG VERSION

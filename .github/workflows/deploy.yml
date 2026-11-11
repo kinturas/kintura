@@ -18,7 +18,7 @@ jobs:
     if: startsWith(github.ref_name, 'web-v')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +45,13 @@ jobs:
           build-args: |
             VERSION=${{ env.VERSION }}
             BUILD_NUMBER=${{ env.BUILD_NUMBER }}
+      # Ohne Datei, die Web-App steckt im Docker-Image.
+      - name: Als GitHub-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "Web $VERSION" --generate-notes \
+            --notes "Docker-Image: \`$IMAGE:$VERSION\` (auch \`$IMAGE:latest\`)"
 
   android:
     if: startsWith(github.ref_name, 'android-v')

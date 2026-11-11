@@ -89,7 +89,7 @@ build-backend:
 	cd backend && go build -ldflags "-X main.version=$(VERSION)+$(BUILD_NUMBER)" -o bin/kintura$(EXE) ./cmd/kintura
 
 build-app:
-	cd app && flutter build web --build-name=$(VERSION) --build-number=$(BUILD_NUMBER) --dart-define=APP_URL=$(APP_URL)
+	cd app && flutter build web --build-name=$(VERSION) --build-number=$(BUILD_NUMBER) --dart-define=APP_URL=$(APP_URL) --dart-define=APP_VERSION=$(VERSION)+$(BUILD_NUMBER)
 
 docker:
 	docker build $(DOCKER_ARGS) --target production -t kintura:$(VERSION) .
