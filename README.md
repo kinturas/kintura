@@ -59,7 +59,7 @@ Hauptversion und zählen je eine eigene Build-Nummer hoch, die auch bei einer ne
 | `make deploy` | `web-v1.2.3` | Image `ghcr.io/kinturas/kintura:1.2.3` und `:latest` |
 | `make deploy-android` | `android-v1.2.3-7` | APK als GitHub-Release |
 | `make deploy-windows` | `windows-v1.2.3-4` | Installer als GitHub-Release |
-| `make deploy-website` | `website-v1.2.3-5` | Website als GitHub Pages |
+| `make deploy-website` | `website-v1.2.3-5` | Image `ghcr.io/kinturas/kintura-website:1.2.3-5` und `:latest` |
 
 Standardmäßig steigt die letzte Stelle der Hauptversion, sonst etwa `make deploy BUMP=minor` oder `BUMP=major`.
 Android und Windows brauchen die Adresse des Backends als Repository-Variable `APP_URL` in GitHub, im Betrieb `https://app.kintura.de`.
@@ -69,21 +69,16 @@ Android und Windows brauchen die Adresse des Backends als Repository-Variable `A
 `website/` ist eine eigenständige statische Seite, unabhängig vom Backend. Die Anmelde-Links zeigen auf die Repository-Variable
 `APP_URL`, lokal auf `APP_URL` aus der `.env`.
 
-`make deploy-website` zählt wie Android und Windows eine eigene Build-Nummer hoch, GitHub veröffentlicht die Seite dann als GitHub Pages.
-Nach jedem Android- oder Windows-Deploy wird sie automatisch neu veröffentlicht, damit die Download-Links stimmen. Die Builds stehen in
+`make deploy-website` zählt wie Android und Windows eine eigene Build-Nummer hoch, GitHub baut die Seite dann als nginx-Image
+(`website/Dockerfile`) und pusht es nach `ghcr.io/kinturas/kintura-website`. Nach jedem Android- oder Windows-Deploy wird `:latest`
+automatisch neu gebaut, damit die Download-Links stimmen; der Server muss das Image danach neu ziehen. Die Builds stehen in
 `website/public/releases.json`: `make deploy-android` und `make deploy-windows` tragen ihren Build dort ein und committen das mit,
 die Links stimmen also auch beim lokalen Bauen. Schlägt ein Build in GitHub fehl, muss sein Eintrag von Hand wieder raus.
 
-Für GitHub Pages einmalig einrichten:
+Impressum und Datenschutz sind nicht im Image, sie kommen beim Start des Containers dazu (siehe unten). Ohne sie zeigt die Seite die
+Beispieldaten aus dem Repository.
 
-- Settings, Pages, Source auf **GitHub Actions** stellen. Eine eigene Domain wird dort ebenfalls eingetragen.
-- Repository-Variablen `CONTENT_IMPRESSUM` und `CONTENT_DATENSCHUTZ` mit dem ganzen Markdown anlegen (Settings, Secrets and variables,
-  Actions, Variables; mehrzeilig erlaubt). Ohne sie bricht der Deploy ab, damit nie die Beispieldaten online gehen.
-- Die Datenschutzerklärung muss GitHub als Hoster nennen: GitHub, Inc. in den USA speichert die IP-Adressen der Besucher in Zugriffsprotokollen.
-- Eigene HTTP-Header gehen auf Pages nicht. Die Content-Security-Policy steht deshalb auch als `<meta>`-Tag in den Seiten.
-
-Das Docker-Image mit nginx (`website/Dockerfile`) bleibt zum lokalen Testen und für einen eigenen Betrieb. Lokal startet
-`docker compose --env-file ../.env up --build` im Ordner `website` die Seite auf Port 8088.
+Lokal startet `docker compose --env-file ../.env up --build` im Ordner `website` die Seite auf Port 8088.
 
 ```powershell
 make docker-website

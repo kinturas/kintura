@@ -132,8 +132,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release create "$GITHUB_REF_NAME" "builds/kintura-$VERSION-$BUILD_NUMBER-windows-setup.exe" --title "Windows $VERSION" --generate-notes
 
-  # Veröffentlicht website/ als GitHub Pages. Läuft auch nach jedem App-Release, damit die
-  # Download-Links aktuell bleiben. Einmalig: Settings, Pages, Source auf "GitHub Actions".
+  # Baut website/ als nginx-Image. Läuft auch nach jedem App-Release, damit releases.json im
+  # Image und damit die Download-Links aktuell bleiben. Impressum und Datenschutz kommen erst
+  # beim Start des Containers dazu, siehe website/content-from-env.sh.
   website:
     needs: [android, windows]
     if: >-
@@ -141,38 +142,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      packages: write
     env:
+      WEBSITE_IMAGE: ghcr.io/kinturas/kintura-website
       REPO_URL: ${{ vars.REPO_URL || format('{0}/{1}', github.server_url, github.repository) }}
-      CONTENT_IMPRESSUM: ${{ vars.CONTENT_IMPRESSUM }}
-      CONTENT_DATENSCHUTZ: ${{ vars.CONTENT_DATENSCHUTZ }}
     steps:
       - uses: actions/checkout@v7
       - name: Repository-Variablen prüfen
         run: |
-          for name in APP_URL CONTENT_IMPRESSUM CONTENT_DATENSCHUTZ; do
-            if [ -z "$(printenv "$name")" ]; then
-              echo "::error::Die Repository-Variable $name fehlt (Settings, Secrets and variables, Actions, Variables)."
-              exit 1
-            fi
-          done
-      - name: Seite zusammenstellen
+          if [ -z "$APP_URL" ]; then
+            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
+            exit 1
+          fi
+      # Eine Versionsnummer gibt es nur bei website-v..., nach einem App-Release nur :latest.
+      - name: Tags bestimmen
         run: |
-          rm -rf "${RUNNER_TEMP:?}/site"
-          cp -r website/public "$RUNNER_TEMP/site"
-          cp -r website/content "$RUNNER_TEMP/site/content"
-          sed -i -e "s|__APP_URL__|$APP_URL|g" -e "s|__REPO_URL__|$REPO_URL|g" "$RUNNER_TEMP/site/index.html"
-          # Impressum und Datenschutz aus den Repository-Variablen statt der Beispieldaten.
-          CONTENT_DIR="$RUNNER_TEMP/site/content" sh website/content-from-env.sh
-      - uses: actions/upload-pages-artifact@v4
+          tags="$WEBSITE_IMAGE:latest"
+          case "$GITHUB_REF_NAME" in
+            website-v*) tags="$tags,$WEBSITE_IMAGE:${GITHUB_REF_NAME#website-v}" ;;
+          esac
+          echo "TAGS=$tags" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
-          path: ${{ runner.temp }}/site
-      - id: deploy
-        uses: actions/deploy-pages@v4
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: website
+          push: true
+          tags: ${{ env.TAGS }}
+          build-args: |
+            APP_URL=${{ env.APP_URL }}
+            REPO_URL=${{ env.REPO_URL }}

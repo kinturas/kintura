@@ -48,7 +48,7 @@ help:
 	@echo make deploy         - Neue Hauptversion und Tag web-v..., GitHub baut das Docker-Image
 	@echo make deploy-android - Aktuelle Hauptversion mit neuer Build-Nummer, GitHub baut die APK als Release
 	@echo make deploy-windows - Aktuelle Hauptversion mit neuer Build-Nummer, GitHub baut das Windows-Release
-	@echo make deploy-website - Neue Build-Nummer, GitHub veroeffentlicht die Website als GitHub Pages
+	@echo make deploy-website - Neue Build-Nummer, GitHub baut das Website-Image mit nginx
 	@echo make docker-website - Website-Image mit nginx lokal bauen, zum Testen oder eigenen Betrieb
 	@echo make android-key    - Release-Schluessel der Android-App einmalig erzeugen
 	@echo make clean          - Build-Ausgaben loeschen, backend/data bleibt erhalten
