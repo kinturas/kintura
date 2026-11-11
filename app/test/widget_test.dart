@@ -601,8 +601,8 @@ void main() {
     expect(tokens.token, 't1');
     expect(find.text('Müller'), findsOneWidget);
     for (final area in [
-      'Listen',
       'Kalender',
+      'Listen',
       'Dokumente',
       'Mahlzeiten',
       'Nachrichten',
@@ -620,8 +620,8 @@ void main() {
 
     testWidgets('zeigen „Kommt bald“ und öffnen sich nicht', (tester) async {
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
-      expect(find.text('Kommt bald'), findsNWidgets(5));
-      for (final title in ['Dokumente', 'Mahlzeiten', 'Nachrichten', 'Fotos', 'Besondere Tage']) {
+      expect(find.text('Kommt bald'), findsNWidgets(6));
+      for (final title in ['Listen', 'Dokumente', 'Mahlzeiten', 'Nachrichten', 'Fotos', 'Besondere Tage']) {
         expect(find.descendant(of: tile(title), matching: find.text('Kommt bald')), findsOneWidget, reason: title);
         await tester.tap(find.text(title));
         await tester.pumpAndSettle();
@@ -637,9 +637,9 @@ void main() {
       await disposeApp(tester);
     });
 
-    testWidgets('Listen, Kalender und Einstellungen sind frei', (tester) async {
+    testWidgets('Kalender und Einstellungen sind frei', (tester) async {
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
-      for (final title in ['Listen', 'Kalender', 'Einstellungen']) {
+      for (final title in ['Kalender', 'Einstellungen']) {
         expect(find.descendant(of: tile(title), matching: find.text('Kommt bald')), findsNothing, reason: title);
         await tester.tap(find.text(title));
         await tester.pumpAndSettle();

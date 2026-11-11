@@ -26,8 +26,8 @@ class _Area {
 }
 
 List<_Area> _areasFor(FamilyType type) => [
-  const _Area('Listen', 'Einkauf & Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen()),
   const _Area('Kalender', 'Termine', Icons.calendar_month, Color(0xFF3567B5), CalendarScreen()),
+  const _Area('Listen', 'Einkauf & Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
   const _Area('Dokumente', 'Wichtige Unterlagen', Icons.folder_outlined, Color(0xFF8A6D1F), DocumentsScreen(), comingSoon: true),
   const _Area('Mahlzeiten', 'Essensplaner', Icons.restaurant_menu, Color(0xFFC2571A), MealsScreen(), comingSoon: true),
   _Area('Nachrichten', type.chat, Icons.chat_bubble_outline, const Color(0xFF7B4FB0), const MessagesScreen(), comingSoon: true),
