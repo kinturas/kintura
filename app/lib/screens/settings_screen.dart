@@ -195,14 +195,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final family = session.current;
     // Leaving the last family clears it just before this page closes.
     if (family == null) return const SizedBox.shrink();
+    final header = familyHeaderColors(family);
+    final onHeader = header.foreground;
     return DefaultTabController(
       length: 4,
       child: Scaffold(
         appBar: AppBar(
+          backgroundColor: header.background,
+          foregroundColor: onHeader,
+          scrolledUnderElevation: header.background == null ? null : 0,
           title: const Text('Einstellungen'),
           bottom: TabBar(
             // Four names do not fit next to each other on a phone.
             isScrollable: true,
+            // On the family's color the theme's tab colors may not be readable.
+            labelColor: onHeader,
+            unselectedLabelColor: onHeader?.withValues(alpha: 0.72),
+            indicatorColor: onHeader,
+            dividerColor: onHeader?.withValues(alpha: 0.2),
             tabs: [
               const Tab(text: 'Mitglieder'),
               Tab(text: family.type.label),

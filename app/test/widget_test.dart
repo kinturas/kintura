@@ -1569,6 +1569,10 @@ void main() {
     await tester.tap(find.text('Speichern'));
     await tester.pumpAndSettle();
     expect(backend.headerColor, '#1565C0');
+    // The settings header takes it on right away.
+    final settingsBar = tester.widget<AppBar>(find.widgetWithText(AppBar, 'Einstellungen'));
+    expect(settingsBar.backgroundColor, parseHexColor('#1565C0'));
+    expect(settingsBar.foregroundColor, Colors.white);
 
     await tester.tap(find.byType(BackButton));
     await tester.pumpAndSettle();

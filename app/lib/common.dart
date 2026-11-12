@@ -24,6 +24,14 @@ String toHexColor(Color color) =>
 Color readableOn(Color background) =>
     ThemeData.estimateBrightnessForColor(background) == Brightness.dark ? Colors.white : Colors.black;
 
+/// The colors of a header tinted in the color of [family]; both null without one.
+({Color? background, Color? foreground}) familyHeaderColors(Family? family) {
+  final color = family?.familyColor ?? '';
+  if (color.isEmpty) return (background: null, foreground: null);
+  final background = parseHexColor(color);
+  return (background: background, foreground: readableOn(background));
+}
+
 class UserAvatar extends StatelessWidget {
   const UserAvatar(this.name, {super.key, this.color = ''});
 

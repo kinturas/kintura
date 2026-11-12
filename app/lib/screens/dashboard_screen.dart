@@ -45,13 +45,13 @@ class DashboardScreen extends StatelessWidget {
     final family = session.current;
     if (family == null) return const _NoFamilyScreen();
     final areas = _areasFor(family.type);
-    final headerColor = family.familyColor.isEmpty ? null : parseHexColor(family.familyColor);
+    final header = familyHeaderColors(family);
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: headerColor,
-        foregroundColor: headerColor == null ? null : readableOn(headerColor),
+        backgroundColor: header.background,
+        foregroundColor: header.foreground,
         // Keeps the color steady instead of tinting it once the page scrolls.
-        scrolledUnderElevation: headerColor == null ? null : 0,
+        scrolledUnderElevation: header.background == null ? null : 0,
         title: const _FamilySwitcher(),
         actions: [
           IconButton(
