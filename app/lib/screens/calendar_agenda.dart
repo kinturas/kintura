@@ -54,6 +54,13 @@ class AgendaView extends StatefulWidget {
 }
 
 class AgendaViewState extends State<AgendaView> {
+  /// Shows only the week of the selected day instead of the month. Lasts while
+  /// the app is open, also when another view is chosen in between.
+  static bool _weekOnly = false;
+
+  @visibleForTesting
+  static void showMonth() => _weekOnly = false;
+
   final _scroll = ScrollController();
   final _center = UniqueKey();
   final _list = GlobalKey();
@@ -320,7 +327,8 @@ class AgendaViewState extends State<AgendaView> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+          // Room above sets the days apart from the entries of the one before.
+          padding: const EdgeInsets.fromLTRB(16, 28, 16, 4),
           child: Text(
             '${isToday ? 'Heute, ' : ''}${weekdayDateFormat.format(day)}$year',
             style: Theme.of(context).textTheme.titleSmall?.copyWith(color: isToday ? colors.primary : null),
@@ -363,6 +371,43 @@ class AgendaViewState extends State<AgendaView> {
             child: const Text('Weiter suchen'),
           ),
         ],
+      ),
+    );
+  }
+
+  /// The week of the selected day; it follows the list, and a swipe sideways goes a week on or back.
+  Widget _singleWeek(BuildContext context) {
+    final selected = _dayOf(widget.selected);
+    return GestureDetector(
+      key: const Key('agenda-week'),
+      onHorizontalDragEnd: (details) {
+        final speed = details.primaryVelocity ?? 0;
+        if (speed.abs() < 200) return;
+        widget.onSelected(DateTime(selected.year, selected.month, selected.day + (speed < 0 ? 7 : -7)));
+      },
+      child: SizedBox(
+        height: _gridRowHeight,
+        child: _week(context, startOfWeek(selected, widget.firstWeekday), DateTime(selected.year, selected.month)),
+      ),
+    );
+  }
+
+  /// A flat bar below the grid that folds it to one week and back.
+  Widget _gridToggle(BuildContext context) {
+    return Tooltip(
+      message: _weekOnly ? 'Ganzen Monat zeigen' : 'Nur die Woche zeigen',
+      child: InkWell(
+        key: const Key('agenda-grid-toggle'),
+        onTap: () => setState(() => _weekOnly = !_weekOnly),
+        child: SizedBox(
+          height: 20,
+          width: double.infinity,
+          child: Icon(
+            _weekOnly ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+            size: 20,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
       ),
     );
   }
@@ -436,16 +481,20 @@ class AgendaViewState extends State<AgendaView> {
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: WeekdayRow(firstWeekday: widget.firstWeekday, height: _gridRowHeight),
             ),
-            SizedBox(
-              height: _gridWeeks * _gridRowHeight,
-              child: WeekScroller(
-                key: ValueKey(widget.firstWeekday),
-                selected: widget.selected,
-                firstWeekday: widget.firstWeekday,
-                onDay: widget.onSelected,
-                builder: _week,
+            if (_weekOnly)
+              _singleWeek(context)
+            else
+              SizedBox(
+                height: _gridWeeks * _gridRowHeight,
+                child: WeekScroller(
+                  key: ValueKey(widget.firstWeekday),
+                  selected: widget.selected,
+                  firstWeekday: widget.firstWeekday,
+                  onDay: widget.onSelected,
+                  builder: _week,
+                ),
               ),
-            ),
+            _gridToggle(context),
           ],
           const Divider(height: 1),
           Expanded(

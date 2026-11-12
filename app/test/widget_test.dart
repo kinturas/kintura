@@ -4,6 +4,7 @@ import 'package:kintura/api.dart';
 import 'package:kintura/common.dart';
 import 'package:kintura/main.dart';
 import 'package:kintura/offline_cache.dart';
+import 'package:kintura/screens/calendar_agenda.dart';
 import 'package:kintura/screens/calendar_views.dart';
 import 'package:kintura/screens/event_detail_screen.dart';
 import 'package:kintura/screens/event_edit_screen.dart';
@@ -485,6 +486,8 @@ void main() {
     await initializeDateFormatting('de');
     LoginScreen.pollInterval = const Duration(hours: 1);
   });
+  // Folding the grid lasts while the app is open, which here means across tests.
+  setUp(AgendaViewState.showMonth);
 
   group('Termine', eventTests);
   group('Kalender', calendarTests);
@@ -3592,6 +3595,64 @@ void calendarTests() {
       await disposeApp(tester);
     });
 
+    testWidgets('Tag: Wischen blättert zum nächsten Tag, Stunden und Uhrzeit bleiben stehen', (tester) async {
+      final backend = FakeBackend();
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      backend.eventRows = [_entry('Morgen früh', DateTime(today.year, today.month, today.day + 1, 13))];
+      await _openCalendar(tester, backend);
+      await _pickView(tester, 'Tag');
+      final pager = find.byKey(const Key('day-pager'));
+      List<DateTime> days() => tester.widget<TimeGridView>(find.byType(TimeGridView)).days;
+      expect(days().single, today);
+      // The neighbors are loaded before they come into view.
+      expect(backend.ranges.last.$2.isAfter(DateTime(today.year, today.month, today.day + 1)), isTrue);
+
+      // Down to the afternoon first; that stays when the day changes.
+      await tester.drag(pager, const Offset(0, -250));
+      await tester.pumpAndSettle();
+      final hour = find.text('12:00');
+      final at = tester.getTopLeft(hour);
+
+      // Mid-swipe the hours do not move along.
+      final gesture = await tester.startGesture(tester.getCenter(pager));
+      await gesture.moveBy(const Offset(-50, 0));
+      await gesture.moveBy(const Offset(-200, 0));
+      await tester.pump();
+      expect(tester.getTopLeft(hour), at);
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.fling(pager, const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(days().single, DateTime(today.year, today.month, today.day + 1));
+      expect(find.text('Morgen früh'), findsOneWidget);
+      expect(tester.getTopLeft(hour), at, reason: 'dieselbe Uhrzeit im Blick');
+      expect(tester.widget<PageView>(find.byType(PageView)).controller!.page! % 1, 0, reason: 'eingerastet');
+
+      // The arrows still page, and the pages slide along.
+      // The back button of the app bar is called „Zurück“ too.
+      await tester.tap(find.byIcon(Icons.chevron_left));
+      await tester.pumpAndSettle();
+      expect(days().single, today);
+      expect(find.text('Morgen früh'), findsNothing);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Woche: Wischen blättert um sieben Tage', (tester) async {
+      final now = DateTime.now();
+      await _openCalendar(tester, FakeBackend());
+      await _pickView(tester, 'Woche');
+      final start = startOfWeek(now, DateTime.monday);
+      List<DateTime> days() => tester.widget<TimeGridView>(find.byType(TimeGridView)).days;
+      expect(days().first, start);
+      await tester.fling(find.byKey(const Key('day-pager')), const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(days().first, DateTime(start.year, start.month, start.day + 7));
+      expect(days(), hasLength(7));
+      await disposeApp(tester);
+    });
+
     testWidgets('Tag und Woche behalten die Pfeile, weil Scrollen dort die Stunden bewegt', (tester) async {
       await _openCalendar(tester, FakeBackend());
       for (final view in ['Tag', '3 Tage', 'Woche']) {
@@ -3679,13 +3740,54 @@ void calendarTests() {
       double topOf(WidgetTester tester, Finder finder) => tester.getTopLeft(finder).dy;
       Finder list() => find.byType(CustomScrollView);
 
+      testWidgets('der flache Knopf klappt den Monat auf eine Woche zusammen und wieder auf', (tester) async {
+        final backend = FakeBackend()..eventRows = rows({'In einer Woche': 7});
+        await _openCalendar(tester, backend);
+        final toggle = find.byKey(const Key('agenda-grid-toggle'));
+        final week = find.byKey(const Key('agenda-week'));
+        expect(find.byType(WeekScroller), findsOneWidget);
+        expect(find.byTooltip('Nur die Woche zeigen'), findsOneWidget);
+        final listTop = tester.getTopLeft(list()).dy;
+
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(find.byType(WeekScroller), findsNothing);
+        expect(week, findsOneWidget);
+        expect(find.byTooltip('Ganzen Monat zeigen'), findsOneWidget);
+        // Five weeks less leave that much more room for the list.
+        expect(tester.getTopLeft(list()).dy, lessThan(listTop - 150));
+        final start = startOfWeek(today, DateTime.monday);
+        for (var i = 0; i < 7; i++) {
+          final day = DateTime(start.year, start.month, start.day + i);
+          expect(find.descendant(of: week, matching: find.text('${day.day}')), findsOneWidget, reason: '$day');
+        }
+
+        // Swiped from right to left the week goes on, and the list along with it.
+        await tester.fling(week, const Offset(-300, 0), 1000);
+        await tester.pumpAndSettle();
+        final next = DateTime(start.year, start.month, start.day + 7);
+        expect(find.descendant(of: week, matching: find.text('${next.day}')), findsOneWidget);
+        expect(find.text('In einer Woche'), findsOneWidget);
+
+        // It stays folded while another view is in between.
+        await _pickView(tester, 'Tag');
+        await _pickView(tester, 'Tagebuch');
+        expect(week, findsOneWidget);
+
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(find.byType(WeekScroller), findsOneWidget);
+        expect(week, findsNothing);
+        await disposeApp(tester);
+      });
+
       testWidgets('startet beim heutigen Tag, frühere stehen darüber, spätere darunter', (tester) async {
         final backend = FakeBackend()..eventRows = rows({'Gestern': -1, 'Heute früh': 0, 'Morgen': 1});
         await _openCalendar(tester, backend);
 
         final top = tester.getTopLeft(list()).dy;
         expect(find.textContaining('Heute, '), findsOneWidget);
-        expect(topOf(tester, find.textContaining('Heute, ')), closeTo(top + 16, 1));
+        expect(topOf(tester, find.textContaining('Heute, ')), closeTo(top + 28, 1));
         expect(find.text('Heute früh'), findsOneWidget);
         expect(find.text('Morgen'), findsOneWidget);
         expect(topOf(tester, find.text('Morgen')), greaterThan(topOf(tester, find.text('Heute früh'))));
@@ -3711,7 +3813,7 @@ void calendarTests() {
         await tester.pumpAndSettle();
 
         final top = tester.getTopLeft(list()).dy;
-        expect(topOf(tester, find.textContaining(weekdayDateFormat.format(target))), closeTo(top + 16, 1));
+        expect(topOf(tester, find.textContaining(weekdayDateFormat.format(target))), closeTo(top + 28, 1));
         expect(backend.ranges, isEmpty);
         await disposeApp(tester);
       });
@@ -3816,7 +3918,7 @@ void calendarTests() {
         await tester.pumpAndSettle();
         final target = DateTime(now.year, now.month, day);
         expect(find.textContaining(weekdayDateFormat.format(target)), findsOneWidget);
-        expect(topOf(tester, find.textContaining(weekdayDateFormat.format(target))), closeTo(tester.getTopLeft(list()).dy + 16, 1));
+        expect(topOf(tester, find.textContaining(weekdayDateFormat.format(target))), closeTo(tester.getTopLeft(list()).dy + 28, 1));
         await disposeApp(tester);
       });
 

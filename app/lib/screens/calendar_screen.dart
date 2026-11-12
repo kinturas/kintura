@@ -91,9 +91,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
       final next = startOfWeek(DateTime(_month.year, _month.month + 1), _firstWeekday);
       end = DateTime(next.year, next.month, next.day + 6 * 7);
     } else {
+      // The spans on both sides come into view while swiping, so they load along.
       final days = _gridDaysShown;
-      start = days.first;
-      end = DateTime(days.last.year, days.last.month, days.last.day + 1);
+      start = DateTime(days.first.year, days.first.month, days.first.day - days.length);
+      end = DateTime(days.last.year, days.last.month, days.last.day + 1 + days.length);
     }
     final request = ++_latestLoad;
     final entries = await _fetch(start, end);
@@ -279,7 +280,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         children: [
           _header(context),
           Expanded(
-            child: TimeGridView(days: _gridDaysShown, entries: _shownEntries, onOpenEntry: _open),
+            child: TimeGridView(days: _gridDaysShown, entries: _shownEntries, onOpenEntry: _open, onPage: _goTo),
           ),
         ],
       ),

@@ -620,12 +620,19 @@ int _visibleEnd(PlacedEntry item) =>
     item.endMinute - item.startMinute < _minEntryMinutes ? item.startMinute + _minEntryMinutes : item.endMinute;
 
 /// Hours on the left and one column per day: the day, three-day and week views.
+///
+/// Swiped sideways, it snaps to the next or previous span of as many days. The
+/// hours stay in place, and so does how far down the day is scrolled.
 class TimeGridView extends StatefulWidget {
-  const TimeGridView({super.key, required this.days, required this.entries, required this.onOpenEntry});
+  const TimeGridView({super.key, required this.days, required this.entries, required this.onOpenEntry, this.onPage});
 
   final List<DateTime> days;
   final List<CalendarEntry> entries;
   final ValueChanged<CalendarEntry> onOpenEntry;
+
+  /// Reports the first day of a span swiped to. A change of [days] from outside
+  /// only moves the pages along.
+  final ValueChanged<DateTime>? onPage;
 
   @override
   State<TimeGridView> createState() => _TimeGridViewState();
@@ -635,14 +642,114 @@ class _TimeGridViewState extends State<TimeGridView> {
   static const _hourHeight = 48.0;
   static const _gutter = 44.0;
   static const _maxAllDayShown = 3;
+  static const _dayHeaderHeight = 44.0;
+
+  /// The height of an [EntryChip] with its margin.
+  static const _chipHeight = 20.0;
+  static const _slide = Duration(milliseconds: 250);
+
+  /// Further than this many spans the pages change at once instead of sliding.
+  static const _maxSlidePages = 3;
+
+  /// Pages lie around this index, so that there is room both ways.
+  static const _base = 100000;
+
+  late final PageController _controller;
+
+  /// The page in view, the first day of the page [_base], and the days per page.
+  late int _page;
+  late DateTime _anchor;
+  late int _count;
+
+  /// While moving by itself it passes spans nobody went to.
+  int _sliding = 0;
 
   // Most days have nothing to show before the morning.
-  final _scroll = ScrollController(initialScrollOffset: 7 * _hourHeight);
+  double _hourOffset = 7 * _hourHeight;
+  final _hours = ScrollController(initialScrollOffset: 7 * _hourHeight);
+
+  @override
+  void initState() {
+    super.initState();
+    _page = _base;
+    _anchor = widget.days.first;
+    _count = widget.days.length;
+    _controller = PageController(initialPage: _page);
+  }
 
   @override
   void dispose() {
-    _scroll.dispose();
+    _controller.dispose();
+    _hours.dispose();
     super.dispose();
+  }
+
+  static DateTime _shift(DateTime day, int days) => DateTime(day.year, day.month, day.day + days);
+
+  // In UTC, because a day with a time change is not 24 hours long.
+  static int _daysBetween(DateTime from, DateTime to) =>
+      DateTime.utc(to.year, to.month, to.day).difference(DateTime.utc(from.year, from.month, from.day)).inDays;
+
+  List<DateTime> _daysOf(int page) {
+    final first = _shift(_anchor, (page - _base) * _count);
+    return [for (var i = 0; i < _count; i++) _shift(first, i)];
+  }
+
+  int get _currentPage => _controller.hasClients ? (_controller.page ?? _page).round() : _page;
+
+  @override
+  void didUpdateWidget(TimeGridView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final first = widget.days.first;
+    final count = widget.days.length;
+    final diff = _daysBetween(_daysOf(_page).first, first);
+    if (count == _count && diff == 0) return;
+    final steps = diff ~/ _count;
+    if (count == _count && diff % _count == 0 && steps.abs() <= _maxSlidePages) {
+      final target = _page + steps;
+      _page = target;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _slideTo(target));
+      return;
+    }
+    // Another span, or a day off the steps: the page in view shows it at once.
+    final page = _currentPage;
+    _count = count;
+    _anchor = _shift(first, -(page - _base) * count);
+    _page = page;
+  }
+
+  Future<void> _slideTo(int target) async {
+    if (!mounted || !_controller.hasClients) return;
+    _sliding++;
+    await _controller.animateToPage(target, duration: _slide, curve: Curves.easeOut);
+    _sliding--;
+  }
+
+  void _onPageChanged(int page) {
+    if (_sliding > 0) return;
+    _page = page;
+    widget.onPage?.call(_daysOf(page).first);
+  }
+
+  void _onHourScroll(double offset) {
+    _hourOffset = offset;
+    if (_hours.hasClients && _hours.offset != offset) _hours.jumpTo(offset);
+  }
+
+  List<CalendarEntry> _allDayOn(DateTime day) =>
+      widget.entries.where((entry) => entry.spansDays && entry.occursOn(day)).toList();
+
+  /// Lines of all-day entries, the same on the pages next to each other, so
+  /// that the hours line up with each of them while swiping.
+  int get _allDayLines {
+    var lines = 0;
+    for (var page = _page - 1; page <= _page + 1; page++) {
+      for (final day in _daysOf(page)) {
+        final count = _allDayOn(day).length;
+        if (count > lines) lines = count;
+      }
+    }
+    return lines > _maxAllDayShown ? _maxAllDayShown : lines;
   }
 
   Widget _dayHeader(BuildContext context, DateTime day) {
@@ -662,7 +769,7 @@ class _TimeGridViewState extends State<TimeGridView> {
   }
 
   Widget _allDayCell(DateTime day) {
-    final entries = widget.entries.where((entry) => entry.spansDays && entry.occursOn(day)).toList();
+    final entries = _allDayOn(day);
     final shown = entries.length > _maxAllDayShown ? _maxAllDayShown - 1 : entries.length;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 1),
@@ -673,7 +780,10 @@ class _TimeGridViewState extends State<TimeGridView> {
           for (final entry in entries.take(shown))
             EntryChip(entry: entry, onTap: () => widget.onOpenEntry(entry)),
           if (shown < entries.length)
-            Text('+${entries.length - shown}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 11)),
+            SizedBox(
+              height: _chipHeight,
+              child: Text('+${entries.length - shown}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 11)),
+            ),
         ],
       ),
     );
@@ -732,40 +842,68 @@ class _TimeGridViewState extends State<TimeGridView> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final days = widget.days;
-    final hasAllDay = widget.entries.any((entry) => entry.spansDays && days.any(entry.occursOn));
+  /// The days of one page: their headers, all-day entries and hours.
+  Widget _pageOf(BuildContext context, int page, int lines, ScrollBehavior scrolling) {
+    final days = _daysOf(page);
     return Column(
       children: [
-        Row(
-          children: [
-            const SizedBox(width: _gutter),
-            for (final day in days) Expanded(child: _dayHeader(context, day)),
-          ],
+        SizedBox(
+          height: _dayHeaderHeight,
+          child: Row(children: [for (final day in days) Expanded(child: _dayHeader(context, day))]),
         ),
-        if (hasAllDay)
+        if (lines > 0)
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(width: _gutter),
-                for (final day in days) Expanded(child: _allDayCell(day)),
-              ],
+            child: SizedBox(
+              height: lines * _chipHeight,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [for (final day in days) Expanded(child: _allDayCell(day))],
+              ),
             ),
           ),
         const Divider(height: 8),
         Expanded(
-          child: SingleChildScrollView(
-            controller: _scroll,
-            child: SizedBox(
-              height: 24 * _hourHeight,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SizedBox(
-                    width: _gutter,
+          // Up and down it scrolls as before; only the pages also follow the mouse.
+          child: ScrollConfiguration(
+            behavior: scrolling,
+            child: _HourScroll(
+              initialOffset: _hourOffset,
+              onScroll: _onHourScroll,
+              child: SizedBox(
+                height: 24 * _hourHeight,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [for (final day in days) Expanded(child: _dayColumn(context, day))],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = _allDayLines;
+    final scrolling = ScrollConfiguration.of(context);
+    final headerHeight = _dayHeaderHeight + (lines > 0 ? 4 + lines * _chipHeight : 0) + 8;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // The hours stay while the days move; they follow the scrolling of the page in view.
+        SizedBox(
+          width: _gutter,
+          child: Column(
+            children: [
+              SizedBox(height: headerHeight),
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: _hours,
+                  physics: const NeverScrollableScrollPhysics(),
+                  child: SizedBox(
+                    height: 24 * _hourHeight,
                     child: Stack(
                       children: [
                         for (var hour = 1; hour < 24; hour++)
@@ -780,13 +918,57 @@ class _TimeGridViewState extends State<TimeGridView> {
                       ],
                     ),
                   ),
-                  for (final day in days) Expanded(child: _dayColumn(context, day)),
-                ],
+                ),
               ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ScrollConfiguration(
+            // On the web and the desktop only touch drags by default; the mouse should too.
+            behavior: scrolling.copyWith(dragDevices: PointerDeviceKind.values.toSet()),
+            child: PageView.builder(
+              key: const Key('day-pager'),
+              controller: _controller,
+              onPageChanged: _onPageChanged,
+              itemBuilder: (context, page) => _pageOf(context, page, lines, scrolling),
             ),
           ),
         ),
       ],
     );
   }
+}
+
+/// The hours of one page, scrolled up and down. A page that comes into view
+/// starts where the others were.
+class _HourScroll extends StatefulWidget {
+  const _HourScroll({required this.initialOffset, required this.onScroll, required this.child});
+
+  final double initialOffset;
+  final ValueChanged<double> onScroll;
+  final Widget child;
+
+  @override
+  State<_HourScroll> createState() => _HourScrollState();
+}
+
+class _HourScrollState extends State<_HourScroll> {
+  late final ScrollController _scroll;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll = ScrollController(initialScrollOffset: widget.initialOffset)
+      ..addListener(() => widget.onScroll(_scroll.offset));
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(controller: _scroll, child: widget.child);
 }
