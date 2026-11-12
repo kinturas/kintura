@@ -792,6 +792,12 @@ func TestOtherFamiliesInCalendar(t *testing.T) {
 	e.expect(201, "POST", path+"/invitations", ben, obj{"email": "a@example.de", "role": "user"})
 	e.expect(200, "GET", "/api/me", anna, nil) // accepts the invitation
 
+	// The other family's calendar starts switched off.
+	if got := titlesOf(e.entries(anna, own, from, to)); got != "" {
+		t.Errorf("after joining, before switching on: %s", got)
+	}
+	e.expect(204, "PUT", "/api/families/"+own+"/calendars/family:"+foreign, anna, obj{"enabled": true, "color": calendarColors["other_family"]})
+
 	got := e.entries(anna, own, from, to)
 	if titlesOf(got) != "Offen" {
 		t.Fatalf("after joining: %s", titlesOf(got))
@@ -1169,6 +1175,7 @@ func TestEntryColors(t *testing.T) {
 	otherBase := "/api/families/" + e.firstFamily(other)
 	e.expect(201, "POST", otherBase+"/invitations", other, obj{"email": "a@example.de", "role": "user"})
 	e.expect(200, "GET", "/api/me", token, nil) // accepts the invitation
+	e.expect(204, "PUT", base+"/calendars/family:"+e.firstFamily(other), token, obj{"enabled": true, "color": calendarColors["other_family"]})
 	const otherColor = "#D32F2F"
 	e.expect(204, "PUT", otherBase+"/color", other, obj{"color": otherColor})
 	e.expect(201, "POST", otherBase+"/events", other, eventBody(merge(only(e.expect(200, "GET", "/api/me", other, nil)["id"]),

@@ -244,7 +244,8 @@ func (s *Server) calendarsOf(r *http.Request, c reqCtx, prefs calendarPrefs, cou
 
 	out := []calendar{}
 	add := func(cal calendar) {
-		cal.Enabled = true
+		// Other families' calendars start hidden, so that joining one does not fill the own calendar.
+		cal.Enabled = cal.Kind != "other_family"
 		cal.ColorShared = sharedColorKinds[cal.Kind]
 		if cal.Color == "" {
 			cal.Color = calendarColors[cal.Kind]
