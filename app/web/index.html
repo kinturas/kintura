@@ -27,12 +27,63 @@
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg"/>
   <link rel="icon" type="image/png" href="favicon.png"/>
 
   <title>Kintura</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- Splash screen: visible immediately, until Flutter draws its first frame. -->
+  <style>
+    :root { --splash-bg: #f4f7f5; --splash-fg: #2e6b57; --splash-muted: #5f6f68; --splash-track: rgba(46, 107, 87, 0.18); }
+    @media (prefers-color-scheme: dark) {
+      :root { --splash-bg: #121815; --splash-fg: #8fd3b5; --splash-muted: #a3b3ab; --splash-track: rgba(143, 211, 181, 0.2); }
+    }
+    html, body { margin: 0; height: 100%; background: var(--splash-bg); }
+    #splash {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+      background: var(--splash-bg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      transition: opacity 250ms ease-out;
+    }
+    #splash.hidden { opacity: 0; pointer-events: none; }
+    #splash img { width: 96px; height: 96px; border-radius: 22px; }
+    #splash .name { font-size: 28px; font-weight: 600; color: var(--splash-fg); letter-spacing: 0.02em; }
+    #splash .bar { width: 160px; height: 4px; border-radius: 2px; background: var(--splash-track); overflow: hidden; }
+    #splash .bar::after {
+      content: ""; display: block; width: 40%; height: 100%; border-radius: 2px; background: var(--splash-fg);
+      animation: splash-slide 1.1s ease-in-out infinite;
+    }
+    #splash .hint { font-size: 14px; color: var(--splash-muted); min-height: 1.2em; }
+    @keyframes splash-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+    @media (prefers-reduced-motion: reduce) { #splash .bar::after { animation-duration: 3s; } }
+  </style>
 </head>
 <body>
+  <div id="splash" role="status" aria-live="polite">
+    <img src="icons/Icon-192.png" alt="">
+    <div class="name">Kintura</div>
+    <div class="bar"></div>
+    <div class="hint" id="splash-hint">Wird geladen …</div>
+  </div>
+  <noscript>Kintura braucht JavaScript.</noscript>
+  <script>
+    (function () {
+      var splash = document.getElementById('splash');
+      var hint = document.getElementById('splash-hint');
+      // On a slow first load, tell the user it is still working.
+      var slow = setTimeout(function () {
+        hint.textContent = 'Der erste Start kann etwas dauern …';
+      }, 4000);
+      // Flutter fires this once the app has drawn its first frame.
+      window.addEventListener('flutter-first-frame', function () {
+        clearTimeout(slow);
+        splash.classList.add('hidden');
+        setTimeout(function () { splash.remove(); }, 300);
+      }, { once: true });
+    })();
+  </script>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
