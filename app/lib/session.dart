@@ -210,6 +210,8 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> signIn(String token) async {
+    // Whatever is kept from before may belong to someone else.
+    await api.cache?.clear();
     await tokens.write(token);
     api.token = token;
     await refresh();
@@ -233,7 +235,12 @@ class AppSession extends ChangeNotifier {
   }
 
   Future<void> select(Family family) async {
-    await api.post('/api/families/${family.id}/select');
+    try {
+      await api.post('/api/families/${family.id}/select');
+    } on ApiException catch (e) {
+      // Offline the other family can still be read, only the server does not remember the choice.
+      if (e.status != 0) rethrow;
+    }
     current = family;
     notifyListeners();
   }
@@ -256,6 +263,8 @@ class AppSession extends ChangeNotifier {
   // and the next sign-in replaces the values.
   void _dropSession() {
     tokens.clear();
+    // Nothing of the account stays readable on the device.
+    api.cache?.clear();
     api.token = null;
     status = SessionStatus.signedOut;
     notifyListeners();

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:kintura/api.dart';
 import 'package:kintura/common.dart';
 import 'package:kintura/main.dart';
+import 'package:kintura/offline_cache.dart';
 import 'package:kintura/screens/calendar_views.dart';
 import 'package:kintura/screens/event_detail_screen.dart';
 import 'package:kintura/screens/event_edit_screen.dart';
@@ -18,6 +19,7 @@ import 'package:http/testing.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:intl/intl.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MemoryThemes implements ThemeStore {
   String? mode;
@@ -60,6 +62,11 @@ const baseColors = [
 
 /// In-memory stand-in for the auth part of the backend.
 class FakeBackend {
+  /// No network: every request fails before it reaches the server.
+  bool down = false;
+
+  /// The server is down behind a proxy, which answers with 502 and no message.
+  bool proxyDown = false;
   bool registered = false;
   final calls = <String>[];
   final ranges = <(DateTime, DateTime)>[];
@@ -168,6 +175,8 @@ class FakeBackend {
 
   late final client = MockClient((request) async {
     calls.add(request.url.path);
+    if (down) throw http.ClientException('Netzwerk weg');
+    if (proxyDown) return http.Response('<html>Bad Gateway</html>', 502);
     final isJson = request.headers['content-type']?.startsWith('application/json') ?? false;
     final body = isJson ? jsonDecode(request.body) : null;
     Object? response;
@@ -427,12 +436,18 @@ class FakeBackend {
   );
 }
 
-Future<AppSession> pumpApp(WidgetTester tester, FakeBackend backend, MemoryTokens tokens, {ThemeStore? themes}) async {
+Future<AppSession> pumpApp(
+  WidgetTester tester,
+  FakeBackend backend,
+  MemoryTokens tokens, {
+  ThemeStore? themes,
+  ResponseCache? cache,
+}) async {
   tester.view.physicalSize = const Size(1000, 1400);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   final session = AppSession(
-    api: ApiClient(client: backend.client, baseUrl: 'http://test'),
+    api: ApiClient(client: backend.client, baseUrl: 'http://test', cache: cache),
     tokens: tokens,
     themes: themes,
   );
@@ -472,6 +487,7 @@ void main() {
 
   group('Termine', eventTests);
   group('Kalender', calendarTests);
+  offlineTests();
 
   group('Alternative Anmeldung', () {
     const link = Key('alternative-login');
@@ -5137,5 +5153,108 @@ void calendarTests() {
     await tester.pumpAndSettle();
     expect(backend.profile['birthday'], '');
     await disposeApp(tester);
+  });
+}
+
+void offlineTests() {
+  group('Offline', () {
+    testWidgets('Kalender zeigt offline den zuletzt geladenen Stand, Speichern braucht den Server', (tester) async {
+      final backend = FakeBackend();
+      final now = DateTime.now();
+      backend.eventRows = [_entry('Zahnarzt', DateTime(now.year, now.month, now.day, 10))];
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());
+      await tester.tap(find.text('Kalender'));
+      await tester.pumpAndSettle();
+      expect(find.text('Zahnarzt'), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+
+      backend.down = true;
+      await tester.tap(find.text('Kalender'));
+      await tester.pumpAndSettle();
+      expect(find.text('Zahnarzt'), findsOneWidget);
+      expect(find.byKey(const Key('offline-banner')), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+
+      // Settings read from the device too, but saving them takes the server.
+      await tester.tap(find.text('Einstellungen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(Tab, 'Familie'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Speichern'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Speichern geht erst wieder mit Verbindung'), findsOneWidget);
+
+      // The colors were never loaded online, so that part says it cannot show them.
+      expect(find.textContaining('noch nicht auf dem Gerät gespeichert'), findsOneWidget);
+
+      backend.down = false;
+      await tester.tap(
+        find.descendant(of: find.byKey(const Key('offline-banner')), matching: find.text('Erneut versuchen')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('offline-banner')), findsNothing);
+      await disposeApp(tester);
+    });
+
+    testWidgets('App startet offline mit dem gespeicherten Stand statt mit der Fehlerseite', (tester) async {
+      final backend = FakeBackend();
+      final cache = MemoryResponseCache();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: cache);
+      await disposeApp(tester);
+
+      backend.down = true;
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: cache);
+      expect(find.text('Hallo Anna'), findsOneWidget);
+      expect(find.byKey(const Key('offline-banner')), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ohne gespeicherten Stand bleibt es bei der Seite „nicht erreichbar“', (tester) async {
+      final backend = FakeBackend()..down = true;
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());
+      expect(find.text('Der Server ist nicht erreichbar.'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ein 502 vom Proxy gilt als offline', (tester) async {
+      final backend = FakeBackend();
+      final cache = MemoryResponseCache();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: cache);
+      await disposeApp(tester);
+
+      backend.proxyDown = true;
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: cache);
+      expect(find.text('Hallo Anna'), findsOneWidget);
+      expect(find.byKey(const Key('offline-banner')), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Abmelden löscht den gespeicherten Stand', (tester) async {
+      final cache = MemoryResponseCache();
+      final session = await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', cache: cache);
+      expect(cache.entries, isNotEmpty);
+      await session.signOut();
+      await tester.pumpAndSettle();
+      expect(cache.entries, isEmpty);
+      await disposeApp(tester);
+    });
+
+    test('der Speicher auf dem Gerät gibt die ältesten Antworten zuerst frei', () async {
+      SharedPreferences.setMockInitialValues({});
+      final cache = await PrefsResponseCache.open(maxChars: 10);
+      await cache.write('/a', '"1234"');
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      await cache.write('/b', '"5678"');
+      expect(cache.read('/a'), isNull);
+      expect(cache.read('/b')?.body, '"5678"');
+
+      // Opened again, it finds what it kept.
+      final reopened = await PrefsResponseCache.open(maxChars: 10);
+      expect(reopened.read('/b')?.body, '"5678"');
+      await reopened.clear();
+      expect((await PrefsResponseCache.open()).read('/b'), isNull);
+    });
   });
 }

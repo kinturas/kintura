@@ -3,6 +3,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'api.dart';
+import 'offline_banner.dart';
+import 'offline_cache.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'session.dart';
@@ -16,13 +18,22 @@ const maxPageWidth = 960.0;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('de');
-  final api = ApiClient();
+  final api = ApiClient(cache: await _openCache());
   final session = AppSession(api: api, tokens: SecureTokenStore(), themes: SecureThemeStore());
   // Before the first frame, or the app would start in the wrong design.
   await session.loadThemeMode();
   session.start();
   final updates = UpdateCheck(api: api)..start();
   runApp(KinturaApp(session: session, updates: updates));
+}
+
+/// Without storage the app still works, only not offline.
+Future<ResponseCache?> _openCache() async {
+  try {
+    return await PrefsResponseCache.open();
+  } catch (_) {
+    return null;
+  }
 }
 
 class KinturaApp extends StatelessWidget {
@@ -68,8 +79,14 @@ class KinturaApp extends StatelessWidget {
                 ),
               ),
             );
+            final online = OfflineBanner(
+              api: session.api,
+              // Without anything kept, the app waits on its own page for the server.
+              onRetry: () => session.status == SessionStatus.signedIn ? session.refresh() : session.start(),
+              child: page,
+            );
             final check = updates;
-            return check == null ? page : UpdateBanner(check: check, child: page);
+            return check == null ? online : UpdateBanner(check: check, child: online);
           },
           home: const _Root(),
         ),
