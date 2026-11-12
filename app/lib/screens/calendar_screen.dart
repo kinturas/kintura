@@ -131,6 +131,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     _load();
   }
 
+  static bool _hasMouse(BuildContext context) => switch (Theme.of(context).platform) {
+    TargetPlatform.windows || TargetPlatform.macOS || TargetPlatform.linux => true,
+    _ => false,
+  };
+
+  /// To the first of a month, as when swiping there.
+  void _moveMonth(int delta) => _goTo(DateTime(_month.year, _month.month + delta));
+
   void _goTo(DateTime day) {
     setState(() => _selected = DateTime(day.year, day.month, day.day));
     if (_view != 'agenda') _load();
@@ -307,6 +315,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ),
         actions: [
+          // Swiping is for fingers; with a mouse, arrows are at hand. In the web app
+          // the platform is that of the browser's device.
+          if (_view == 'month' && _hasMouse(context)) ...[
+            IconButton(tooltip: 'Voriger Monat', icon: const Icon(Icons.chevron_left), onPressed: () => _moveMonth(-1)),
+            IconButton(tooltip: 'Nächster Monat', icon: const Icon(Icons.chevron_right), onPressed: () => _moveMonth(1)),
+          ],
           PopupMenuButton<String>(
             tooltip: 'Ansicht',
             icon: const Icon(Icons.view_module_outlined),

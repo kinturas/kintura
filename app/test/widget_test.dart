@@ -10,6 +10,7 @@ import 'package:kintura/screens/event_edit_screen.dart';
 import 'package:kintura/screens/login_screen.dart';
 import 'package:kintura/screens/special_days_screen.dart';
 import 'package:kintura/session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -3513,10 +3514,81 @@ void calendarTests() {
       final range = backend.ranges.last;
       expect(range.$1.isBefore(DateTime(now.year, now.month - 1, 2)), isTrue);
       expect(range.$2.isAfter(DateTime(now.year, now.month + 2)), isTrue);
+      String title(int months) => DateFormat('MMMM yyyy', 'de').format(DateTime(now.year, now.month + months));
+      final pager = find.byKey(const Key('month-pager'));
       backend.ranges.clear();
-      await _wheelMonth(tester, 1);
-      expect(find.text(DateFormat('MMMM yyyy', 'de').format(DateTime(now.year, now.month + 1))), findsOneWidget);
+
+      // Swiped from right to left it snaps to the next month.
+      await tester.fling(pager, const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(find.text(title(1)), findsOneWidget);
       expect(backend.ranges, hasLength(1));
+      expect(tester.getTopLeft(find.byKey(ValueKey(DateTime(now.year, now.month + 1, 1)))).dx,
+          greaterThanOrEqualTo(tester.getTopLeft(pager).dx), reason: 'eingerastet');
+
+      // Back again the other way.
+      await tester.fling(pager, const Offset(400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(find.text(title(0)), findsOneWidget);
+
+      // One step of the mouse wheel is one month, not a free scroll.
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(pointer.hover(tester.getCenter(pager)));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 100)));
+      await tester.pumpAndSettle();
+      expect(find.text(title(1)), findsOneWidget);
+      expect(tester.widget<PageView>(find.byType(PageView)).controller!.page! % 1, 0);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Monat: am Computer blättern Pfeile, auf dem Handy nicht', (tester) async {
+      final backend = FakeBackend();
+      backend.calendarPrefs['view'] = 'month';
+      final now = DateTime.now();
+      String title(int months) => DateFormat('MMMM yyyy', 'de').format(DateTime(now.year, now.month + months));
+
+      // The tests run as Android.
+      await _openCalendar(tester, backend);
+      expect(find.byTooltip('Nächster Monat'), findsNothing);
+      await disposeApp(tester);
+
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        await _openCalendar(tester, backend);
+        await tester.tap(find.byTooltip('Nächster Monat'));
+        await tester.pumpAndSettle();
+        expect(find.text(title(1)), findsOneWidget);
+        final page = tester.widget<PageView>(find.byType(PageView)).controller!.page!;
+        expect(page % 1, 0, reason: 'eingerastet');
+        await tester.tap(find.byTooltip('Voriger Monat'));
+        await tester.tap(find.byTooltip('Voriger Monat'));
+        await tester.pumpAndSettle();
+        expect(find.text(title(-1)), findsOneWidget);
+        expect(tester.widget<PageView>(find.byType(PageView)).controller!.page, page - 2);
+
+        // Only the month has them; the other views keep their own arrows.
+        await _pickView(tester, 'Woche');
+        expect(find.byTooltip('Nächster Monat'), findsNothing);
+        await disposeApp(tester);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('Monat: Antippen eines Tages öffnet ihn weiter, Ziehen mit der Maus blättert', (tester) async {
+      final backend = FakeBackend();
+      backend.calendarPrefs['view'] = 'month';
+      final now = DateTime.now();
+      await _openCalendar(tester, backend);
+      final pager = find.byKey(const Key('month-pager'));
+      // On the web and the desktop only touch drags pages by default.
+      await tester.fling(pager, const Offset(-300, 0), 1000, deviceKind: PointerDeviceKind.mouse);
+      await tester.pumpAndSettle();
+      expect(find.text(DateFormat('MMMM yyyy', 'de').format(DateTime(now.year, now.month + 1))), findsOneWidget);
+
+      await tester.tap(find.byKey(ValueKey(DateTime(now.year, now.month + 1, 15))));
+      await tester.pumpAndSettle();
+      expect(find.byType(TimeGridView), findsOneWidget);
       await disposeApp(tester);
     });
 
@@ -3547,6 +3619,45 @@ void calendarTests() {
       expect(find.textContaining('KW'), findsNothing);
       await _pickView(tester, 'Tag');
       expect(find.text('KW ${isoWeekNumber(DateTime.now())}'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Monat: die Wochennummern bleiben beim Wischen stehen, nur die Zahlen wechseln', (tester) async {
+      final backend = FakeBackend();
+      backend.calendarPrefs['view'] = 'month';
+      backend.calendarPrefs['week_numbers'] = true;
+      final now = DateTime.now();
+      await _openCalendar(tester, backend);
+      final pager = find.byKey(const Key('month-pager'));
+      List<String> labels(DateTime month) {
+        final first = startOfWeek(month, DateTime.monday);
+        return [for (var w = 0; w < 6; w++) '${isoWeekNumber(DateTime(first.year, first.month, first.day + w * 7))}'];
+      }
+
+      final column = find.byKey(const Key('week-numbers'));
+      Finder week(String label) => find.descendant(of: column, matching: find.text(label));
+      final x = tester.getTopLeft(column).dx;
+      expect(x, lessThan(tester.getTopLeft(pager).dx), reason: 'links neben den Monaten');
+      for (final label in labels(DateTime(now.year, now.month))) {
+        expect(week(label), findsOneWidget, reason: 'KW $label');
+      }
+
+      // Mid-swipe the column does not move along.
+      final gesture = await tester.startGesture(tester.getCenter(pager));
+      await gesture.moveBy(const Offset(-50, 0));
+      await gesture.moveBy(const Offset(-200, 0));
+      await tester.pump();
+      expect(tester.getTopLeft(column).dx, x);
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // Once on the next month, the same column names its weeks.
+      await tester.fling(pager, const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(column).dx, x);
+      for (final label in labels(DateTime(now.year, now.month + 1))) {
+        expect(week(label), findsOneWidget, reason: 'KW $label');
+      }
       await disposeApp(tester);
     });
 
@@ -5189,11 +5300,20 @@ void offlineTests() {
       // The colors were never loaded online, so that part says it cannot show them.
       expect(find.textContaining('noch nicht auf dem Gerät gespeichert'), findsOneWidget);
 
-      backend.down = false;
-      await tester.tap(
-        find.descendant(of: find.byKey(const Key('offline-banner')), matching: find.text('Erneut versuchen')),
-      );
+      final retry = find.descendant(of: find.byKey(const Key('offline-banner')), matching: find.text('Erneut versuchen'));
+      // Trying by hand while still offline says what to check.
+      await tester.tap(retry);
       await tester.pumpAndSettle();
+      expect(find.byKey(const Key('offline-dialog')), findsOneWidget);
+      expect(find.textContaining('mobile Daten oder WLAN'), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('offline-dialog')), findsNothing);
+
+      backend.down = false;
+      await tester.tap(retry);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('offline-dialog')), findsNothing);
       expect(find.byKey(const Key('offline-banner')), findsNothing);
       await disposeApp(tester);
     });
@@ -5208,6 +5328,11 @@ void offlineTests() {
       await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: cache);
       expect(find.text('Hallo Anna'), findsOneWidget);
       expect(find.byKey(const Key('offline-banner')), findsOneWidget);
+      // Right below the title bar, not above it.
+      expect(
+        tester.getTopLeft(find.byKey(const Key('offline-banner'))).dy,
+        greaterThanOrEqualTo(tester.getBottomLeft(find.byType(AppBar)).dy),
+      );
       await disposeApp(tester);
     });
 

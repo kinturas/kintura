@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 
 import 'api.dart';
 
-/// Shows a bar above the app while the server cannot be reached, see [ApiClient.offline].
+/// Shows a bar right below the app bar of every page while the server cannot be
+/// reached, see [ApiClient.offline]. It is a [MaterialBanner] of the app's
+/// [ScaffoldMessenger], so it stays in place while pages change.
 class OfflineBanner extends StatefulWidget {
   const OfflineBanner({super.key, required this.api, required this.onRetry, required this.child});
 
@@ -19,8 +21,9 @@ class OfflineBanner extends StatefulWidget {
 }
 
 class _OfflineBannerState extends State<OfflineBanner> {
-  bool _retrying = false;
+  final _retrying = ValueNotifier(false);
   Timer? _timer;
+  bool _shown = false;
 
   @override
   void initState() {
@@ -33,74 +36,96 @@ class _OfflineBannerState extends State<OfflineBanner> {
   void dispose() {
     widget.api.offline.removeListener(_follow);
     _timer?.cancel();
+    _retrying.dispose();
     super.dispose();
   }
 
-  /// While offline, asks again now and then, so that the bar goes once the server is back.
   void _follow() {
-    if (!widget.api.offline.value) {
+    final offline = widget.api.offline.value;
+    if (!offline) {
       _timer?.cancel();
       _timer = null;
     } else {
+      // While offline, asks again now and then, so that the bar goes once the server is back.
       _timer ??= Timer.periodic(const Duration(seconds: 30), (_) {
-        if (!_retrying) _retry();
+        if (!_retrying.value) _retry();
       });
     }
+    // The change can come in while a frame is built, and the messenger cannot change then.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _update());
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
-  Future<void> _retry() async {
-    setState(() => _retrying = true);
-    try {
-      await widget.onRetry();
-    } on ApiException {
-      // Still offline, the bar stays.
-    } finally {
-      if (mounted) setState(() => _retrying = false);
+  void _update() {
+    if (!mounted) return;
+    final offline = widget.api.offline.value;
+    if (offline == _shown) return;
+    _shown = offline;
+    final messenger = ScaffoldMessenger.of(context);
+    if (offline) {
+      messenger.showMaterialBanner(_banner());
+    } else {
+      messenger.hideCurrentMaterialBanner();
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
+  MaterialBanner _banner() {
     final scheme = Theme.of(context).colorScheme;
-    return ValueListenableBuilder(
-      valueListenable: widget.api.offline,
-      builder: (context, offline, _) => Column(
-        children: [
-          if (offline)
-            Material(
-              key: const Key('offline-banner'),
-              color: scheme.tertiaryContainer,
-              child: SafeArea(
-                bottom: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
-                  child: Row(
-                    children: [
-                      Icon(Icons.cloud_off, color: scheme.onTertiaryContainer),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Offline: Du siehst den zuletzt geladenen Stand. Ändern geht erst wieder mit Verbindung.',
-                          style: TextStyle(color: scheme.onTertiaryContainer),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: _retrying ? null : _retry,
-                        child: const Text('Erneut versuchen'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          Expanded(
-            child: offline
-                // The bar already keeps the top inset clear.
-                ? MediaQuery.removePadding(context: context, removeTop: true, child: widget.child)
-                : widget.child,
+    return MaterialBanner(
+      key: const Key('offline-banner'),
+      backgroundColor: scheme.tertiaryContainer,
+      leading: Icon(Icons.cloud_off, color: scheme.onTertiaryContainer),
+      content: Text(
+        'Änderungen nicht möglich',
+        style: TextStyle(color: scheme.onTertiaryContainer),
+      ),
+      actions: [
+        ValueListenableBuilder(
+          valueListenable: _retrying,
+          // This context lies inside the page, below the navigator that the dialog needs.
+          builder: (context, retrying, _) => TextButton(
+            onPressed: retrying ? null : () => _retryByHand(context),
+            child: const Text('Erneut versuchen'),
           ),
+        ),
+      ],
+    );
+  }
+
+  /// Unlike the checks in the background, says so when it did not work.
+  Future<void> _retryByHand(BuildContext context) async {
+    await _retry();
+    if (!context.mounted || !widget.api.offline.value) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('offline-dialog'),
+        icon: const Icon(Icons.cloud_off),
+        title: const Text('Keine Verbindung'),
+        content: const Text(
+          'Der Server ist gerade nicht erreichbar. Prüfe, ob mobile Daten oder WLAN eingeschaltet sind, '
+          'und versuche es dann noch einmal.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
         ],
       ),
     );
   }
+
+  /// Leaves [ApiClient.offline] set if the server still cannot be reached. Offline
+  /// that is no error: the requests then answer from the device.
+  Future<void> _retry() async {
+    _retrying.value = true;
+    try {
+      await widget.onRetry();
+    } on ApiException {
+      // Nothing kept to fall back on; offline stays set either way.
+    } finally {
+      if (mounted) _retrying.value = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

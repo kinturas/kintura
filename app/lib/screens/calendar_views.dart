@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../common.dart';
@@ -254,6 +255,179 @@ class _WeekScrollerState extends State<WeekScroller> {
   }
 }
 
+/// One page per month, six weeks each, that snaps into place: swiped sideways,
+/// dragged with the mouse, or turned one month per step of the wheel.
+class MonthPager extends StatefulWidget {
+  const MonthPager({
+    super.key,
+    required this.selected,
+    required this.firstWeekday,
+    required this.onDay,
+    required this.builder,
+    this.weekLabel,
+  });
+
+  final DateTime selected;
+  final int firstWeekday;
+
+  /// Labels the weeks in a column that stays in place while the months move;
+  /// only its labels change with the month in view. Null shows no column.
+  final Widget Function(BuildContext context, DateTime weekStart)? weekLabel;
+
+  /// Reports the first day of a month paged to. A change of [selected] from
+  /// outside only moves the pages along.
+  final ValueChanged<DateTime> onDay;
+  final Widget Function(BuildContext context, DateTime weekStart, DateTime month) builder;
+
+  @override
+  State<MonthPager> createState() => _MonthPagerState();
+}
+
+class _MonthPagerState extends State<MonthPager> {
+  static const _weeks = 6;
+  static const _slide = Duration(milliseconds: 250);
+
+  /// Further than this the pages jump, or months would rush past for no use.
+  static const _maxSlideMonths = 3;
+
+  /// A wheel or trackpad sends many steps for one turn; this many count as one.
+  static const _wheelPause = Duration(milliseconds: 400);
+
+  // Set in initState: a lazy `late` initializer would only run on first use, by
+  // then possibly with the month the pages are still to move to.
+  late final PageController _controller;
+  late int _page;
+
+  /// The month mostly in view, also halfway through a swipe; it names the weeks.
+  late final ValueNotifier<int> _inView;
+
+  @override
+  void initState() {
+    super.initState();
+    _page = _pageOf(widget.selected);
+    _controller = PageController(initialPage: _page)..addListener(_onMove);
+    _inView = ValueNotifier(_page);
+  }
+
+  /// While moving by itself it passes months nobody went to.
+  int _sliding = 0;
+  DateTime _lastWheel = DateTime(0);
+
+  // Months since January 1970.
+  static int _pageOf(DateTime day) => (day.year - 1970) * 12 + day.month - 1;
+  static DateTime _monthAt(int page) => DateTime(1970, page + 1);
+
+  @override
+  void didUpdateWidget(MonthPager oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final target = _pageOf(widget.selected);
+    if (target == _page) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _goTo(target));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _inView.dispose();
+    super.dispose();
+  }
+
+  void _onMove() {
+    final page = _controller.page;
+    if (page != null) _inView.value = page.round();
+  }
+
+  /// The first days of the weeks a month shows.
+  List<DateTime> _weeksOf(int page) {
+    final first = startOfWeek(_monthAt(page), widget.firstWeekday);
+    return [for (var week = 0; week < _weeks; week++) DateTime(first.year, first.month, first.day + week * 7)];
+  }
+
+  /// Shows a month chosen elsewhere.
+  Future<void> _goTo(int target) async {
+    if (!mounted || !_controller.hasClients || target == _page) return;
+    _page = target;
+    _sliding++;
+    if ((target - (_controller.page ?? target)).abs() > _maxSlideMonths) {
+      _controller.jumpToPage(target);
+    } else {
+      await _controller.animateToPage(target, duration: _slide, curve: Curves.easeOut);
+    }
+    _sliding--;
+  }
+
+  void _onPageChanged(int page) {
+    if (_sliding > 0) return;
+    _page = page;
+    widget.onDay(_monthAt(page));
+  }
+
+  void _onWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    // Taken before the pages scroll freely by it, which would leave them between months.
+    GestureBinding.instance.pointerSignalResolver.register(event, (event) {
+      final delta = (event as PointerScrollEvent).scrollDelta;
+      final step = delta.dy.abs() >= delta.dx.abs() ? delta.dy : delta.dx;
+      final now = DateTime.now();
+      if (step == 0 || now.difference(_lastWheel) < _wheelPause) return;
+      _lastWheel = now;
+      final page = (_controller.page ?? _page).round() + (step > 0 ? 1 : -1);
+      _controller.animateToPage(page, duration: _slide, curve: Curves.easeOut);
+    });
+  }
+
+  Widget _month(BuildContext context, int page) {
+    final month = _monthAt(page);
+    return Listener(
+      onPointerSignal: _onWheel,
+      child: Column(
+        children: [
+          for (final weekStart in _weeksOf(page)) Expanded(child: widget.builder(context, weekStart, month)),
+        ],
+      ),
+    );
+  }
+
+  Widget _weekLabels(Widget Function(BuildContext context, DateTime weekStart) label) {
+    return SizedBox(
+      key: const Key('week-numbers'),
+      width: weekNumberWidth,
+      child: ValueListenableBuilder(
+        valueListenable: _inView,
+        builder: (context, page, _) => AnimatedSwitcher(
+          duration: const Duration(milliseconds: 150),
+          child: Column(
+            key: ValueKey(page),
+            children: [
+              for (final weekStart in _weeksOf(page)) Expanded(child: Center(child: label(context, weekStart))),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = widget.weekLabel;
+    final pages = ScrollConfiguration(
+      // On the web and the desktop only touch drags by default; the mouse should too.
+      behavior: ScrollConfiguration.of(context).copyWith(dragDevices: PointerDeviceKind.values.toSet()),
+      child: PageView.builder(
+        key: const Key('month-pager'),
+        controller: _controller,
+        onPageChanged: _onPageChanged,
+        itemBuilder: _month,
+      ),
+    );
+    if (label == null) return pages;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [_weekLabels(label), Expanded(child: pages)],
+    );
+  }
+}
+
 /// The names of the days above the weeks, which stay in place while those move.
 class WeekdayRow extends StatelessWidget {
   const WeekdayRow({super.key, required this.firstWeekday, this.leading = 0, this.height});
@@ -362,21 +536,18 @@ class MonthView extends StatelessWidget {
         WeekdayRow(firstWeekday: firstWeekday, leading: showWeekNumbers ? weekNumberWidth : 0),
         const SizedBox(height: 4),
         Expanded(
-          child: WeekScroller(
+          child: MonthPager(
             key: ValueKey(firstWeekday),
             selected: selected,
             firstWeekday: firstWeekday,
             onDay: onDay,
+            weekLabel: showWeekNumbers
+                ? (context, weekStart) =>
+                      Text('${isoWeekNumber(weekStart)}', style: Theme.of(context).textTheme.labelSmall)
+                : null,
             builder: (context, weekStart, month) => Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (showWeekNumbers)
-                  SizedBox(
-                    width: weekNumberWidth,
-                    child: Center(
-                      child: Text('${isoWeekNumber(weekStart)}', style: Theme.of(context).textTheme.labelSmall),
-                    ),
-                  ),
                 for (var i = 0; i < 7; i++)
                   Expanded(child: _cell(context, DateTime(weekStart.year, weekStart.month, weekStart.day + i), month)),
               ],
