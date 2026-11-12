@@ -495,6 +495,46 @@ func TestUpdateFamilyType(t *testing.T) {
 	e.expect(403, "PUT", "/api/families/"+fid, child, obj{"name": "F", "type": "family"})
 }
 
+func TestFamilyColor(t *testing.T) {
+	e := newEnv(t)
+	token := e.register("p@example.de", "P", "F")
+	fid := e.firstFamily(token)
+	path := "/api/families/" + fid
+	colorOf := func() any {
+		return e.expect(200, "GET", "/api/me", token, nil)["families"].([]any)[0].(obj)["family_color"]
+	}
+
+	if got := colorOf(); got != "" {
+		t.Fatalf("new family has a color: %v", got)
+	}
+	base := baseColors[0].Color
+	e.expect(204, "PUT", path, token, obj{"name": "F", "color": base})
+	if got := colorOf(); got != base {
+		t.Fatalf("color not saved: %v", got)
+	}
+	// Older apps send no color, and that keeps it.
+	e.expect(204, "PUT", path, token, obj{"name": "Neu"})
+	if got := colorOf(); got != base {
+		t.Fatalf("color lost on rename: %v", got)
+	}
+	e.expect(400, "PUT", path, token, obj{"name": "F", "color": "#123456"})
+
+	// A custom color in use by the family cannot be deleted, and a change moves the family along.
+	custom := e.expect(201, "POST", path+"/colors", token, obj{"color": "#123456", "label": "Eigen"})["id"].(string)
+	e.expect(204, "PUT", path, token, obj{"name": "F", "color": "#123456"})
+	e.expect(409, "DELETE", path+"/colors/"+custom, token, nil)
+	e.expect(204, "PUT", path+"/colors/"+custom, token, obj{"color": "#654321", "label": "Eigen"})
+	if got := colorOf(); got != "#654321" {
+		t.Fatalf("color not moved along: %v", got)
+	}
+
+	e.expect(204, "PUT", path, token, obj{"name": "F", "color": ""})
+	if got := colorOf(); got != "" {
+		t.Fatalf("color not removed: %v", got)
+	}
+	e.expect(204, "DELETE", path+"/colors/"+custom, token, nil)
+}
+
 func TestCreatorIsAdminManagerInEveryType(t *testing.T) {
 	e := newEnv(t)
 	token := e.register("p@example.de", "P", "F")

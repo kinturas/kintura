@@ -135,13 +135,14 @@ func (s *Server) checkFamilyColor(ctx context.Context, familyID, color string) e
 	return nil
 }
 
-// colorsInUse lists what members, invited people, categories and the shared calendars
-// of family ?1 refer to. These custom colors cannot be deleted. What someone chose only
+// colorsInUse lists what members, invited people, categories, the shared calendars
+// and the family itself refer to, for family ?1. These custom colors cannot be deleted. What someone chose only
 // for themselves does not count: it falls back to the default, see deleteColor.
 const colorsInUse = `SELECT color FROM memberships WHERE family_id = ?1
 	UNION SELECT color FROM invitations WHERE family_id = ?1
 	UNION SELECT color FROM categories WHERE family_id = ?1
-	UNION SELECT color FROM calendar_colors WHERE family_id = ?1`
+	UNION SELECT color FROM calendar_colors WHERE family_id = ?1
+	UNION SELECT color FROM families WHERE id = ?1`
 
 func (s *Server) listColors(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx := r.Context()
@@ -229,6 +230,7 @@ func (s *Server) updateColor(w http.ResponseWriter, r *http.Request, c reqCtx) e
 		`UPDATE invitations SET color = ?1 WHERE family_id = ?2 AND color = ?3`,
 		`UPDATE categories SET color = ?1 WHERE family_id = ?2 AND color = ?3`,
 		`UPDATE families SET default_color = ?1 WHERE id = ?2 AND default_color = ?3`,
+		`UPDATE families SET color = ?1 WHERE id = ?2 AND color = ?3`,
 		`UPDATE calendar_colors SET color = ?1 WHERE family_id = ?2 AND color = ?3`,
 		`UPDATE calendar_settings SET color = ?1 WHERE family_id = ?2 AND color = ?3`,
 	} {

@@ -353,6 +353,7 @@ class _FamilyTab extends StatefulWidget {
 class _FamilyTabState extends State<_FamilyTab> {
   late final _name = TextEditingController(text: widget.family.name);
   late FamilyType _type = widget.family.type;
+  late String _color = widget.family.familyColor;
 
   @override
   void dispose() {
@@ -367,6 +368,7 @@ class _FamilyTabState extends State<_FamilyTab> {
       await session.api.put(session.familyPath, {
         'name': _name.text.trim(),
         'type': _type.name,
+        'color': _color,
       });
       await session.refresh();
     });
@@ -382,10 +384,12 @@ class _FamilyTabState extends State<_FamilyTab> {
             leading: Icon(widget.family.type.icon),
             title: Text(widget.family.name),
             subtitle: Text(widget.family.type.label),
+            trailing: widget.family.familyColor.isEmpty ? null : ColorDot(widget.family.familyColor),
           ),
         ],
       );
     }
+    final session = SessionScope.of(context);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -397,6 +401,24 @@ class _FamilyTabState extends State<_FamilyTab> {
         TextField(
           controller: _name,
           decoration: InputDecoration(labelText: _type.nameLabel),
+        ),
+        const SizedBox(height: 24),
+        Text('Farbe', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          'Der Kopf des Dashboards färbt sich darin ein, für alle im Kreis.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
+        AsyncView<Map<String, dynamic>>(
+          load: () async => await session.api.get('${session.familyPath}/colors') as Map<String, dynamic>,
+          builder: (context, colors) => ColorChooser(
+            key: const Key('family-color'),
+            colors: colors,
+            singleList: true,
+            selected: _color,
+            onSelected: (color) => setState(() => _color = color),
+          ),
         ),
         const SizedBox(height: 24),
         FilledButton(onPressed: _save, child: const Text('Speichern')),

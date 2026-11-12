@@ -101,6 +101,9 @@ class FakeBackend {
   final feedback = <String>[];
   String familyType = 'family';
   String familyColor = '';
+
+  /// The color of the family itself, unlike [familyColor], which is the user's in it.
+  String headerColor = '';
   bool canChangeColor = true;
   bool rejectInvitation = false;
   bool rejectColors = false;
@@ -154,6 +157,7 @@ class FakeBackend {
     'color': familyColor,
     'can_change_color': canChangeColor,
     'member_name': profile['name'] as String,
+    'family_color': headerColor,
   };
 
   final members = <Map<String, Object>>[
@@ -229,6 +233,7 @@ class FakeBackend {
         response = {'id': 'f2'};
       case '/api/families/f1':
         familyType = body['type'] as String;
+        if (body['color'] case final String color) headerColor = color;
         response = <String, dynamic>{};
       case '/api/families/f1/colors' when request.method == 'GET':
         response = {
@@ -1546,6 +1551,29 @@ void main() {
     expect(find.text('Ben'), findsNothing);
     expect(find.text('Name der Arbeitsgruppe'), findsOneWidget);
     expect(find.text('Müller'), findsOneWidget);
+  });
+
+  testWidgets('Farbe des Kreises färbt den Kopf des Dashboards', (tester) async {
+    final backend = FakeBackend();
+    await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+    Color? header() => tester.widget<AppBar>(find.byType(AppBar).first).backgroundColor;
+    expect(header(), isNull);
+
+    await tester.tap(find.text('Einstellungen'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(Tab, 'Familie'));
+    await tester.pumpAndSettle();
+    final chooser = find.byKey(const Key('family-color'));
+    await tester.tap(find.descendant(of: chooser, matching: find.byTooltip('Blau')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Speichern'));
+    await tester.pumpAndSettle();
+    expect(backend.headerColor, '#1565C0');
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(header(), parseHexColor('#1565C0'));
+    expect(tester.widget<AppBar>(find.byType(AppBar).first).foregroundColor, Colors.white);
   });
 
   testWidgets('ohne Admin-Flag ist der Reiter des Kreises nur lesbar', (tester) async {

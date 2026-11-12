@@ -68,7 +68,7 @@ func (s *Server) getMe(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 		email = ""
 	}
 	families, err := queryRows(ctx, s.db,
-		`SELECT f.id, f.name, f.type, m.role, m.is_admin, m.color, m.can_change_color, m.name AS member_name FROM memberships m JOIN families f ON f.id = m.family_id
+		`SELECT f.id, f.name, f.type, f.color AS family_color, m.role, m.is_admin, m.color, m.can_change_color, m.name AS member_name FROM memberships m JOIN families f ON f.id = m.family_id
 		 WHERE m.user_id = ? ORDER BY f.name`, c.userID)
 	if err != nil {
 		return err
@@ -140,6 +140,8 @@ func (s *Server) updateFamily(w http.ResponseWriter, r *http.Request, c reqCtx) 
 	var in struct {
 		Name string `json:"name"`
 		Type string `json:"type"`
+		// Without it the color stays, so that older apps do not reset it.
+		Color *string `json:"color"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -152,7 +154,16 @@ func (s *Server) updateFamily(w http.ResponseWriter, r *http.Request, c reqCtx) 
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(r.Context(), `UPDATE families SET name = ?, type = ? WHERE id = ?`, name, familyType, c.familyID); err != nil {
+	ctx := r.Context()
+	if in.Color != nil {
+		if err := s.checkMemberColor(ctx, c.familyID, *in.Color); err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE families SET name = ?, type = ?, color = ? WHERE id = ?`, name, familyType, *in.Color, c.familyID)
+	} else {
+		_, err = s.db.ExecContext(ctx, `UPDATE families SET name = ?, type = ? WHERE id = ?`, name, familyType, c.familyID)
+	}
+	if err != nil {
 		return err
 	}
 	return noContent(w)

@@ -94,7 +94,7 @@ enum FamilyType {
 }
 
 class Family {
-  Family(this.id, this.name, this.type, this.role, this.isAdmin, this.color, {this.canChangeColor = true, this.memberName = ''});
+  Family(this.id, this.name, this.type, this.role, this.isAdmin, this.color, {this.canChangeColor = true, this.memberName = '', this.familyColor = ''});
 
   factory Family.fromJson(Map<String, dynamic> json) => Family(
     json['id'] as String,
@@ -105,6 +105,7 @@ class Family {
     json['color'] as String,
     canChangeColor: json['can_change_color'] as bool? ?? true,
     memberName: json['member_name'] as String? ?? '',
+    familyColor: json['family_color'] as String? ?? '',
   );
 
   final String id;
@@ -128,6 +129,9 @@ class Family {
 
   /// What the user is called in this family.
   final String memberName;
+
+  /// The color of the family itself, which tints the dashboard header; empty for none.
+  final String familyColor;
 }
 
 enum SessionStatus { loading, signedOut, signedIn, unreachable }
