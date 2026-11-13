@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -94,7 +96,7 @@ enum FamilyType {
 }
 
 class Family {
-  Family(this.id, this.name, this.type, this.role, this.isAdmin, this.color, {this.canChangeColor = true, this.memberName = '', this.familyColor = ''});
+  Family(this.id, this.name, this.type, this.role, this.isAdmin, this.color, {this.canChangeColor = true, this.memberName = '', this.familyColor = '', this.avatar = ''});
 
   factory Family.fromJson(Map<String, dynamic> json) => Family(
     json['id'] as String,
@@ -106,6 +108,7 @@ class Family {
     canChangeColor: json['can_change_color'] as bool? ?? true,
     memberName: json['member_name'] as String? ?? '',
     familyColor: json['family_color'] as String? ?? '',
+    avatar: json['avatar'] as String? ?? '',
   );
 
   final String id;
@@ -132,6 +135,9 @@ class Family {
 
   /// The color of the family itself, which tints the dashboard header; empty for none.
   final String familyColor;
+
+  /// The user's small profile photo in this family, Base64 JPEG; empty for none.
+  final String avatar;
 }
 
 /// A family that asked the user to join. Nobody joins without saying so.
@@ -239,9 +245,28 @@ class AppSession extends ChangeNotifier {
     await refresh();
   }
 
+  /// GET me as last applied, to tell whether a sync brought anything new.
+  String _lastMe = '';
+
   /// Reloads user and families and selects the last used family.
   Future<void> refresh() async {
+    _apply(await api.get('/api/me') as Map<String, dynamic>, keepCurrent: false);
+  }
+
+  /// Takes over what others changed meanwhile, such as an admin changing one's color
+  /// or role, or the family itself. Keeps the family in view, and rebuilds nothing
+  /// when nothing changed. See SessionSync.
+  Future<void> sync() async {
+    if (status != SessionStatus.signedIn) return;
     final me = await api.get('/api/me') as Map<String, dynamic>;
+    // Signed out meanwhile, or nothing new.
+    if (status != SessionStatus.signedIn || jsonEncode(me) == _lastMe) return;
+    _apply(me, keepCurrent: true);
+  }
+
+  void _apply(Map<String, dynamic> me, {required bool keepCurrent}) {
+    _lastMe = jsonEncode(me);
+    final shown = current?.id;
     userId = me['id'] as String;
     userName = me['name'] as String;
     userEmail = me['email'] as String;
@@ -255,7 +280,9 @@ class AppSession extends ChangeNotifier {
       for (final row in me['invitations'] as List? ?? const []) Invitation.fromJson(row as Map<String, dynamic>),
     ];
     final lastId = me['last_family_id'] as String?;
-    current = families.where((f) => f.id == lastId).firstOrNull;
+    // Another device may have chosen another family meanwhile; this one stays where it is.
+    final keep = keepCurrent ? families.where((f) => f.id == shown).firstOrNull : null;
+    current = keep ?? families.where((f) => f.id == lastId).firstOrNull;
     status = SessionStatus.signedIn;
     notifyListeners();
   }

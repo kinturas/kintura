@@ -110,7 +110,7 @@ class _CreatorScreen extends StatelessWidget {
             for (final member in members)
               ListTile(
                 key: Key('creator-${member['id']}'),
-                leading: UserAvatar(member['name'] as String, color: member['color'] as String),
+                leading: UserAvatar(member['name'] as String, color: member['color'] as String, photo: member['avatar'] as String? ?? ''),
                 title: Text(member['name'] as String),
                 trailing: member['id'] == current ? const Icon(Icons.check) : null,
                 onTap: () => Navigator.pop(context, member),
@@ -749,7 +749,7 @@ class _EventFormState extends State<_EventForm> {
                         _participantTile(
                           key: Key('participant-${member['id']}'),
                           label: member['name'] as String,
-                          icon: UserAvatar(member['name'] as String, color: member['color'] as String),
+                          icon: UserAvatar(member['name'] as String, color: member['color'] as String, photo: member['avatar'] as String? ?? ''),
                           selected: !_everyone && _participants.contains(member['id']),
                           onTap: () => _toggleParticipant(member['id'] as String),
                         ),

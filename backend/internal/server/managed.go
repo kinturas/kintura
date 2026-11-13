@@ -83,8 +83,17 @@ func (s *Server) managedMember(ctx context.Context, c reqCtx, userID string) err
 	return nil
 }
 
+// getMemberProfile lets everyone in a family read the profile of any member there,
+// as it shows on their page. Changing it stays with the member, or an admin for a
+// managed one, see putMemberProfile.
 func (s *Server) getMemberProfile(w http.ResponseWriter, r *http.Request, c reqCtx) error {
-	if err := s.managedMember(r.Context(), c, r.PathValue("uid")); err != nil {
+	var found int
+	err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM memberships WHERE family_id = ? AND user_id = ?`,
+		c.familyID, r.PathValue("uid")).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errNotFound
+	}
+	if err != nil {
 		return err
 	}
 	return s.writeProfile(w, r, c.familyID, r.PathValue("uid"))

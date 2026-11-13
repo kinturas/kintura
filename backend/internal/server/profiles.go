@@ -22,7 +22,8 @@ type profileField struct {
 }
 
 // A profile belongs to a member of a family, so that the same person can appear
-// differently in each of them. Only the member reads it; the others get the name.
+// differently in each of them. Everyone in that family reads it; only the member
+// changes it, or an admin for a member without an address.
 type memberProfile struct {
 	Name         string         `json:"name"`
 	FamilyRole   string         `json:"family_role"`

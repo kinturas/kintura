@@ -74,7 +74,9 @@ func (s *Server) getMe(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 		email = ""
 	}
 	families, err := queryRows(ctx, s.db,
-		`SELECT f.id, f.name, f.type, f.color AS family_color, m.role, m.is_admin, m.color, m.can_change_color, m.name AS member_name FROM memberships m JOIN families f ON f.id = m.family_id
+		`SELECT f.id, f.name, f.type, f.color AS family_color, m.role, m.is_admin, m.color, m.can_change_color, m.name AS member_name,
+			COALESCE(a.small, '') AS avatar FROM memberships m JOIN families f ON f.id = m.family_id
+		 LEFT JOIN member_avatars a ON a.family_id = m.family_id AND a.user_id = m.user_id
 		 WHERE m.user_id = ? ORDER BY f.name`, c.userID)
 	if err != nil {
 		return err
@@ -179,7 +181,8 @@ func (s *Server) listMembers(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	ctx := r.Context()
 	members, err := queryRows(ctx, s.db,
 		`SELECT u.id, m.name, CASE WHEN u.is_managed = 1 THEN '' ELSE u.email END AS email, u.is_managed AS managed,
-			m.role, m.is_admin, m.color, m.can_change_color FROM memberships m JOIN users u ON u.id = m.user_id
+			m.role, m.is_admin, m.color, m.can_change_color, COALESCE(a.small, '') AS avatar FROM memberships m JOIN users u ON u.id = m.user_id
+		 LEFT JOIN member_avatars a ON a.family_id = m.family_id AND a.user_id = m.user_id
 		 WHERE m.family_id = ?
 		 ORDER BY m.is_admin DESC, CASE m.role WHEN 'manager' THEN 0 WHEN 'user' THEN 1 WHEN 'restrict_user' THEN 2 ELSE 3 END, m.name`, c.familyID)
 	if err != nil {

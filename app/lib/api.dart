@@ -98,8 +98,8 @@ class ApiClient {
     return response.bodyBytes;
   }
 
-  Future<dynamic> upload(String path, String filename, Uint8List bytes) async {
-    final request = http.MultipartRequest('POST', Uri.parse('$baseUrl$path'))
+  Future<dynamic> upload(String path, String filename, Uint8List bytes, {String method = 'POST'}) async {
+    final request = http.MultipartRequest(method, Uri.parse('$baseUrl$path'))
       ..headers.addAll(_authHeaders)
       ..files.add(
         http.MultipartFile.fromBytes('file', bytes, filename: filename),

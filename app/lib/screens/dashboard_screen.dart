@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../beta_notice.dart';
 import '../common.dart';
 import '../session.dart';
 import 'calendar_screen.dart';
 import 'files_screens.dart';
 import 'lists_screen.dart';
 import 'meals_screen.dart';
+import 'members_screen.dart';
 import 'messages_screen.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
@@ -25,15 +27,18 @@ class _Area {
   final bool comingSoon;
 }
 
-List<_Area> _areasFor(FamilyType type) => [
+/// The areas in their order. The administration is the admins' alone and comes last.
+List<_Area> _areasFor(FamilyType type, {required bool isAdmin}) => [
   const _Area('Kalender', 'Termine', Icons.calendar_month, Color(0xFF3567B5), CalendarScreen()),
   const _Area('Listen', 'Einkauf & Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
   const _Area('Dokumente', 'Wichtige Unterlagen', Icons.folder_outlined, Color(0xFF8A6D1F), DocumentsScreen(), comingSoon: true),
   const _Area('Mahlzeiten', 'Essensplaner', Icons.restaurant_menu, Color(0xFFC2571A), MealsScreen(), comingSoon: true),
   _Area('Nachrichten', type.chat, Icons.chat_bubble_outline, const Color(0xFF7B4FB0), const MessagesScreen(), comingSoon: true),
   const _Area('Fotos', 'Gemeinsame Bilder', Icons.photo_library_outlined, Color(0xFFB83E6F), PhotosScreen(), comingSoon: true),
-  _Area('Einstellungen', type.label, Icons.settings_outlined, const Color(0xFF55636B), const SettingsScreen()),
   const _Area('Besondere Tage', 'Festtage & Gedenktage', Icons.celebration_outlined, Color(0xFF1E8A99), SpecialDaysScreen(), comingSoon: true),
+  // Named after the kind of family, for everyone in it.
+  _Area(type.label, 'Mitglieder', Icons.groups_outlined, const Color(0xFF3F7D8C), const MembersScreen()),
+  if (isAdmin) _Area('Verwaltung', 'Mitglieder & Einstellungen', Icons.settings_outlined, const Color(0xFF55636B), const SettingsScreen()),
 ];
 
 class DashboardScreen extends StatelessWidget {
@@ -44,7 +49,7 @@ class DashboardScreen extends StatelessWidget {
     final session = SessionScope.of(context);
     final family = session.current;
     if (family == null) return const _NoFamilyScreen();
-    final areas = _areasFor(family.type);
+    final areas = _areasFor(family.type, isAdmin: family.isAdmin);
     final header = familyHeaderColors(family);
     return Scaffold(
       appBar: AppBar(
@@ -56,7 +61,7 @@ class DashboardScreen extends StatelessWidget {
         actions: [
           IconButton(
             tooltip: 'Profil',
-            icon: UserAvatar(session.displayName, color: family.color),
+            icon: UserAvatar(session.displayName, color: family.color, photo: family.avatar),
             onPressed: () => Navigator.of(
               context,
             ).push(MaterialPageRoute(builder: (_) => const ProfileScreen())),
@@ -64,6 +69,7 @@ class DashboardScreen extends StatelessWidget {
           const SizedBox(width: 8),
         ],
       ),
+      bottomNavigationBar: _Footer(family: family, email: session.userEmail),
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
@@ -177,6 +183,43 @@ class InvitationCards extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Who is signed in and in which role on the left, the version of the app on the right.
+class _Footer extends StatelessWidget {
+  const _Footer({required this.family, required this.email});
+
+  final Family family;
+
+  /// Empty for someone without an address of their own.
+  final String email;
+
+  @override
+  Widget build(BuildContext context) {
+    final role = family.type.roleLabel(family.role) + (family.isAdmin ? ', Admin' : '');
+    final style = Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant);
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                email.isEmpty ? role : '$email ($role)',
+                key: const Key('footer-account'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const AppVersionText(),
+          ],
+        ),
+      ),
     );
   }
 }

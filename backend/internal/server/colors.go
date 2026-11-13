@@ -154,8 +154,58 @@ func (s *Server) listColors(w http.ResponseWriter, r *http.Request, c reqCtx) er
 	slices.SortStableFunc(custom, func(a, b map[string]any) int {
 		return compareHue(a["color"].(string), b["color"].(string))
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"base": baseColors, "custom": custom})
+	inUse, err := s.colorsShownInFamily(ctx, c.familyID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"base": baseColors, "custom": custom, "in_use": inUse})
 	return nil
+}
+
+// colorsShownInFamily are the colors someone in the family already sees for something:
+// members and invited people, categories, and the shared calendars with the color
+// they show, their default when nobody chose one. Pickers mark the others as free.
+func (s *Server) colorsShownInFamily(ctx context.Context, familyID string) ([]string, error) {
+	rows, err := queryRows(ctx, s.db,
+		`SELECT color FROM memberships WHERE family_id = ?1
+		 UNION SELECT color FROM invitations WHERE family_id = ?1
+		 UNION SELECT color FROM categories WHERE family_id = ?1`, familyID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[strings.ToUpper(row["color"].(string))] = true
+	}
+	chosen, err := queryRows(ctx, s.db, `SELECT key, color FROM calendar_colors WHERE family_id = ?`, familyID)
+	if err != nil {
+		return nil, err
+	}
+	calendars := map[string]string{}
+	for _, row := range chosen {
+		calendars[row["key"].(string)] = row["color"].(string)
+	}
+	var familyDefault string
+	if err := s.db.QueryRowContext(ctx, `SELECT default_color FROM families WHERE id = ?`, familyID).Scan(&familyDefault); err != nil {
+		return nil, err
+	}
+	for kind := range sharedColorKinds {
+		color := calendars[kind]
+		if color == "" {
+			color = calendarColors[kind]
+		}
+		if kind == "family" && calendars[kind] == "" {
+			color = familyDefault
+		}
+		seen[strings.ToUpper(color)] = true
+	}
+	delete(seen, "")
+	out := make([]string, 0, len(seen))
+	for color := range seen {
+		out = append(out, color)
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 var hexColor = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)

@@ -1,15 +1,20 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:kintura/api.dart';
 import 'package:kintura/common.dart';
 import 'package:kintura/main.dart';
 import 'package:kintura/offline_cache.dart';
+import 'package:kintura/screens/avatar_crop_screen.dart';
 import 'package:kintura/screens/calendar_agenda.dart';
+import 'package:kintura/screens/dashboard_screen.dart';
+import 'package:kintura/screens/settings_screen.dart';
 import 'package:kintura/screens/calendar_views.dart';
 import 'package:kintura/screens/event_detail_screen.dart';
 import 'package:kintura/screens/event_edit_screen.dart';
 import 'package:kintura/screens/special_days_screen.dart';
 import 'package:kintura/session.dart';
+import 'package:kintura/session_sync.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +23,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:image/image.dart' as img;
 import 'package:intl/intl.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -50,6 +56,9 @@ class MemoryTokens implements TokenStore {
   Future<void> clear() async => token = null;
 }
 
+/// A 2×2 JPEG, as the server answers with for a photo.
+final tinyJpegBase64 = base64Encode(img.encodeJpg(img.Image(width: 2, height: 2)));
+
 const baseColors = [
   ('#D32F2F', 'Rot'),
   ('#FF7043', 'Koralle'),
@@ -69,6 +78,17 @@ class FakeBackend {
   /// The server is down behind a proxy, which answers with 502 and no message.
   bool proxyDown = false;
   bool registered = false;
+
+  /// The own small photo in f1, Base64 JPEG; empty for none.
+  String ownAvatar = '';
+  final avatarUploads = <int>[];
+  final avatarCopiedFrom = <String>[];
+
+  /// Holds an upload of the photo back until completed, to see it in progress.
+  Completer<void>? avatarGate;
+
+  /// What the family already shows in which color; null as from an older server.
+  List<String>? inUseColors;
 
   /// Families that invited the address that registers, the earliest first.
   List<String> invitedFamilies = [];
@@ -173,6 +193,7 @@ class FakeBackend {
     'can_change_color': canChangeColor,
     'member_name': profile['name'] as String,
     'family_color': headerColor,
+    'avatar': ownAvatar,
   };
 
   final members = <Map<String, Object>>[
@@ -269,6 +290,7 @@ class FakeBackend {
             for (final (color, label) in baseColors) {'color': color, 'label': label},
           ],
           'custom': customColors,
+          if (inUseColors != null) 'in_use': inUseColors,
         };
       case '/api/families/f1/colors' ||
           '/api/families/f1/colors/c1' ||
@@ -287,11 +309,32 @@ class FakeBackend {
       case '/api/families/f1/color':
         familyColor = body['color'] as String;
         response = <String, dynamic>{};
+      case '/api/families/f1/profile/avatar' when request.method == 'PUT':
+        avatarUploads.add(request.bodyBytes.length);
+        await avatarGate?.future;
+        ownAvatar = tinyJpegBase64;
+        response = {'avatar': ownAvatar};
+      case '/api/families/f1/profile/avatar/copy':
+        avatarCopiedFrom.add(body['family_id'] as String);
+        ownAvatar = tinyJpegBase64;
+        response = {'avatar': ownAvatar};
+      case '/api/families/f1/profile/avatar' when request.method == 'DELETE':
+        ownAvatar = '';
+        return http.Response('', 204);
+      case '/api/families/f1/members/u1/avatar':
+        if (ownAvatar.isEmpty) return _json({'error': 'Nicht gefunden'}, 404);
+        return http.Response.bytes(base64Decode(ownAvatar), 200, headers: {'content-type': 'image/jpeg'});
       case '/api/families/f1/members' when request.method == 'POST':
         managedBody = body as Map<String, dynamic>;
         response = {'id': 'u9'};
       case '/api/families/f1/members':
-        response = {'members': members, 'invitations': invitations, 'former': former};
+        response = {
+          'members': [
+            for (final member in members) {...member, if (member['id'] == 'u1') 'avatar': ownAvatar},
+          ],
+          'invitations': invitations,
+          'former': former,
+        };
       case '/api/families/f1/invitations/i1/resend':
         if (rejectResend) {
           return _json({'error': 'An diese Adresse gingen heute schon genug Einladungen. Bitte morgen erneut versuchen.'}, 429);
@@ -319,6 +362,8 @@ class FakeBackend {
         members[1]['managed'] = false;
         members[1]['email'] = memberEmailRequests.last;
         response = <String, dynamic>{};
+      case '/api/families/f1/members/u1/profile' when request.method == 'GET':
+        response = profile;
       case '/api/families/f1/members/u2/profile' when request.method == 'GET':
         response = memberProfile;
       case '/api/families/f1/members/u2/profile':
@@ -494,6 +539,18 @@ Future<void> _openProfileEdit(WidgetTester tester) async {
 }
 
 /// Ends the poll timer, which otherwise outlives the test.
+/// Opens the administration from the dashboard. Only admins have the tile there; for
+/// the others the page opens as for an admin whose flag goes while it is open.
+Future<void> openSettingsPage(WidgetTester tester) async {
+  final tile = find.text('Verwaltung');
+  if (tile.evaluate().isNotEmpty) {
+    await tester.tap(tile);
+  } else {
+    Navigator.of(tester.element(find.byType(DashboardScreen))).push(MaterialPageRoute<void>(builder: (_) => const SettingsScreen()));
+  }
+  await tester.pumpAndSettle();
+}
+
 Future<void> disposeApp(WidgetTester tester) async {
   await tester.pumpWidget(const SizedBox());
 }
@@ -594,7 +651,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(tokens.token, 't1');
       expect(find.byType(AlertDialog), findsNothing);
-      expect(find.text('Einstellungen'), findsOneWidget);
+      expect(find.text('Verwaltung'), findsOneWidget);
       await disposeApp(tester);
     });
 
@@ -648,8 +705,7 @@ void main() {
         ..managed = true
         ..isAdmin = false;
       await pumpApp(tester, backend, MemoryTokens()..token = 't1');
-      await tester.tap(find.text('Einstellungen'));
-      await tester.pumpAndSettle();
+      await openSettingsPage(tester);
       expect(find.byIcon(Icons.logout), findsNothing);
       await disposeApp(tester);
     });
@@ -761,12 +817,94 @@ void main() {
       'Mahlzeiten',
       'Nachrichten',
       'Fotos',
-      'Einstellungen',
       'Besondere Tage',
+      'Verwaltung',
     ]) {
       expect(find.text(area), findsOneWidget, reason: area);
     }
     await disposeApp(tester);
+  });
+
+  group('Mitglieder', () {
+    testWidgets('die Kachel heißt nach dem Kreis, steht vor der Verwaltung und ist für alle da', (tester) async {
+      for (final isAdmin in [true, false]) {
+        await pumpApp(tester, FakeBackend()..isAdmin = isAdmin, MemoryTokens()..token = 't1');
+        expect(find.text('Familie'), findsOneWidget, reason: 'Admin: $isAdmin');
+        if (isAdmin) {
+          // Right before it in reading order, which the grid fills row by row.
+          final members = tester.getTopLeft(find.text('Familie'));
+          final admin = tester.getTopLeft(find.text('Verwaltung'));
+          expect(members.dy < admin.dy || (members.dy == admin.dy && members.dx < admin.dx), isTrue);
+        }
+        await disposeApp(tester);
+      }
+    });
+
+    testWidgets('listet alle mit Rolle und zeigt beim Antippen das Profil', (tester) async {
+      final backend = FakeBackend();
+      backend.memberProfile = {
+        'name': 'Ben',
+        'family_role': 'Sohn',
+        'contact_email': 'ben@example.de',
+        'birthday': '2014-05-09',
+        'fields': [
+          {'kind': 'mobile', 'value': '0170 123'},
+          {'kind': 'address', 'value': 'Teststraße 1'},
+        ],
+      };
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Familie'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(AppBar, 'Familie'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, 'Anna'), findsOneWidget);
+      expect(find.text('Eltern, Admin'), findsOneWidget);
+      expect(find.text('Kind'), findsOneWidget);
+      expect(find.text('Erwachsenes Kind'), findsOneWidget);
+
+      await tester.tap(find.text('Ben'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(AppBar, 'Profil'), findsOneWidget);
+      for (final text in ['Sohn', 'ben@example.de', '09.05.2014', '0170 123', 'Handy', 'Teststraße 1', 'Adresse']) {
+        expect(find.text(text), findsOneWidget, reason: text);
+      }
+      // Someone else's profile is only to read.
+      expect(find.byKey(const Key('member-profile-edit')), findsNothing);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Liste und Profil haben den Kopf in der Farbe des Kreises', (tester) async {
+      await pumpApp(tester, FakeBackend()..headerColor = '#1565C0', MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Familie'));
+      await tester.pumpAndSettle();
+      for (final title in ['Familie', 'Profil']) {
+        final bar = tester.widget<AppBar>(find.widgetWithText(AppBar, title));
+        expect(bar.backgroundColor, parseHexColor('#1565C0'), reason: title);
+        expect(bar.foregroundColor, Colors.white, reason: title);
+        if (title == 'Familie') {
+          await tester.tap(find.text('Ben'));
+          await tester.pumpAndSettle();
+        }
+      }
+      await disposeApp(tester);
+    });
+
+    testWidgets('das eigene Profil hat oben rechts den Knopf zum Bearbeiten', (tester) async {
+      await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Familie'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Anna'));
+      await tester.pumpAndSettle();
+      final edit = find.byKey(const Key('member-profile-edit'));
+      expect(edit, findsOneWidget);
+      expect(tester.getTopRight(edit).dx, greaterThan(tester.getSize(find.byType(Scaffold).last).width * 0.8));
+
+      await tester.tap(edit);
+      await tester.pumpAndSettle();
+      // The same form as from the profile.
+      expect(find.widgetWithText(AppBar, 'Profil bearbeiten'), findsOneWidget);
+      expect(find.byKey(const Key('profile-name')), findsOneWidget);
+      await disposeApp(tester);
+    });
   });
 
   group('noch nicht freigegebene Bereiche', () {
@@ -791,9 +929,46 @@ void main() {
       await disposeApp(tester);
     });
 
+    testWidgets('Verwaltung kommt zuletzt und nur für Admins', (tester) async {
+      await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
+      final cards = tester.widgetList<Card>(find.byType(Card)).toList();
+      expect(find.descendant(of: find.byWidget(cards.last), matching: find.text('Verwaltung')), findsOneWidget);
+      expect(find.text('Einstellungen'), findsNothing);
+      await disposeApp(tester);
+
+      await pumpApp(tester, FakeBackend()..isAdmin = false, MemoryTokens()..token = 't1');
+      expect(find.text('Verwaltung'), findsNothing);
+      expect(find.text('Kalender'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('unten im Dashboard stehen Adresse mit Rolle links und die Version rechts, sonst nirgends', (tester) async {
+      PackageInfo.setMockInitialValues(appName: 'Kintura', packageName: 'kintura', version: '0.0.11', buildNumber: '40', buildSignature: '');
+      final backend = FakeBackend();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      final account = find.byKey(const Key('footer-account'));
+      expect(tester.widget<Text>(account).data, 'anna@example.de (Eltern, Admin)');
+      expect(find.text('Version 0.0.11 (40)'), findsOneWidget);
+      final page = tester.getRect(find.byType(Scaffold).first);
+      expect(tester.getTopLeft(account).dx, closeTo(page.left + 16, 1));
+      expect(tester.getBottomRight(find.byKey(const Key('app-version'))).dx, closeTo(page.right - 16, 1));
+      expect(tester.getBottomLeft(account).dy, greaterThan(page.bottom - 40));
+
+      // Only on the dashboard.
+      await tester.tap(find.text('Kalender'));
+      await tester.pumpAndSettle();
+      expect(account, findsNothing);
+      await disposeApp(tester);
+
+      // Without an address of their own, the role alone.
+      await pumpApp(tester, FakeBackend()..managed = true..email = ''..isAdmin = false..role = 'restrict_user', MemoryTokens()..token = 't1');
+      expect(tester.widget<Text>(account).data, 'Kind');
+      await disposeApp(tester);
+    });
+
     testWidgets('Kalender und Einstellungen sind frei', (tester) async {
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
-      for (final title in ['Kalender', 'Einstellungen']) {
+      for (final title in ['Kalender', 'Verwaltung']) {
         expect(find.descendant(of: tile(title), matching: find.text('Kommt bald')), findsNothing, reason: title);
         await tester.tap(find.text(title));
         await tester.pumpAndSettle();
@@ -865,7 +1040,7 @@ void main() {
     await pumpApp(tester, backend, MemoryTokens()..token = 't1');
     expect(find.text('Familien-Chat'), findsOneWidget);
 
-    await tester.tap(find.text('Einstellungen'));
+    await tester.tap(find.text('Verwaltung'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(Tab, 'Familie'));
     await tester.pumpAndSettle();
@@ -1493,6 +1668,232 @@ void main() {
     );
   });
 
+  testWidgets('Farbwahl zeigt freie Farben als Ring, vergebene gefüllt, die eigene mit Haken', (tester) async {
+    final backend = FakeBackend()
+      ..familyColor = '#D32F2F'
+      ..inUseColors = ['#D32F2F', '#1565C0', '#ffa000'];
+    await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+    await _openProfileEdit(tester);
+    BoxDecoration look(String color, String state) => tester
+        .widget<Container>(find.descendant(of: find.byKey(ValueKey('swatch-$color-$state')), matching: find.byType(Container)).first)
+        .decoration! as BoxDecoration;
+
+    // Above the swatches it says what filled means.
+    expect(find.text('Farben, die ausgefüllt sind, werden bereits verwendet.'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('colors-in-use-hint'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const ValueKey('swatch-#D32F2F-used'))).dy),
+    );
+
+    // The own color: filled, with the check.
+    expect(look('#D32F2F', 'used').color, parseHexColor('#D32F2F'));
+    expect(find.descendant(of: find.byKey(const ValueKey('swatch-#D32F2F-used')), matching: find.byIcon(Icons.check)), findsOneWidget);
+    // Taken by something else: filled, as before.
+    expect(look('#1565C0', 'used').color, parseHexColor('#1565C0'));
+    // Free: only a thick ring in the color.
+    final free = look('#2E7D32', 'free');
+    expect(free.color, isNull);
+    expect((free.border! as Border).top.color, parseHexColor('#2E7D32'));
+    expect((free.border! as Border).top.width, 5);
+
+    // Chosen, a free color is filled with the check.
+    await tester.tap(find.byKey(const ValueKey('swatch-#2E7D32-free')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('swatch-#2E7D32-used')), findsOneWidget);
+    await disposeApp(tester);
+  });
+
+  testWidgets('ohne Angabe vom Server sehen alle Farben aus wie bisher', (tester) async {
+    await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
+    await _openProfileEdit(tester);
+    expect(find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key! as ValueKey<String>).value.endsWith('-free')), findsNothing);
+    expect(find.byKey(const Key('colors-in-use-hint')), findsNothing);
+    await disposeApp(tester);
+  });
+
+  group('Abgleich im Hintergrund', () {
+    testWidgets('übernimmt, was ein Admin an Farbe und Erlaubnis ändert, ohne neu zu laden', (tester) async {
+      final backend = FakeBackend()..isAdmin = false;
+      final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      Color? avatar() => tester.widget<CircleAvatar>(find.descendant(of: find.byTooltip('Profil'), matching: find.byType(CircleAvatar))).backgroundColor;
+      expect(avatar(), isNull);
+
+      // Meanwhile an admin gives a color and takes away changing it.
+      backend
+        ..familyColor = '#1565C0'
+        ..canChangeColor = false;
+      await session.sync();
+      await tester.pumpAndSettle();
+      expect(avatar(), parseHexColor('#1565C0'));
+      expect(session.current!.canChangeColor, isFalse);
+      await disposeApp(tester);
+    });
+
+    testWidgets('baut ohne Änderung nichts neu und bleibt im geöffneten Kreis', (tester) async {
+      final backend = FakeBackend()
+        ..extraFamilies = [
+          {'id': 'f2', 'name': 'Kegelclub', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': ''},
+        ];
+      final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      var notified = 0;
+      session.addListener(() => notified++);
+      await session.sync();
+      expect(notified, 0, reason: 'nichts geändert');
+
+      // Opened here, while the server still names the other one as last.
+      session.current = session.families.firstWhere((f) => f.id == 'f2');
+      backend.headerColor = '#1565C0';
+      await session.sync();
+      expect(notified, 1);
+      expect(session.current!.id, 'f2');
+      await disposeApp(tester);
+    });
+
+    testWidgets('fragt von selbst in Abständen nach', (tester) async {
+      final backend = FakeBackend();
+      final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      final sync = SessionSync(session: session, interval: const Duration(seconds: 5))..start();
+      addTearDown(sync.dispose);
+      backend.headerColor = '#1565C0';
+      await tester.pump(const Duration(seconds: 6));
+      await tester.pumpAndSettle();
+      expect(session.current!.familyColor, '#1565C0');
+      sync.dispose();
+      await disposeApp(tester);
+    });
+  });
+
+  group('Profilfoto', () {
+    testWidgets('wird gewählt, zugeschnitten, hochgeladen und überall gezeigt', (tester) async {
+      final picture = Uint8List.fromList(img.encodePng(img.Image(width: 300, height: 200)));
+      AvatarCropScreen.pickImage = () async => picture;
+      addTearDown(() => AvatarCropScreen.pickImage = () async => null);
+      final backend = FakeBackend();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      expect(find.byKey(const ValueKey('avatar-photo')), findsNothing);
+      await _openProfileEdit(tester);
+      expect(find.text('Foto hinzufügen'), findsOneWidget);
+      expect(find.byKey(const Key('avatar-remove')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('avatar-change')));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(AppBar, 'Foto zuschneiden'), findsOneWidget);
+      // The cropper decodes and cuts outside the test's clock.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      });
+      await tester.pump();
+      backend.avatarGate = Completer<void>();
+      await tester.tap(find.byKey(const Key('avatar-crop-done')));
+      // The spinner below runs on, so time moves by hand instead of settling.
+      for (var i = 0; i < 30 && find.byType(AvatarCropScreen).evaluate().isNotEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(AvatarCropScreen), findsNothing);
+      // Then the photo is shrunk and sent, which the server holds back for now.
+      for (var i = 0; i < 20 && backend.avatarUploads.isEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      }
+      expect(backend.avatarUploads, hasLength(1));
+      // While it is on its way, the photo shows that it is busy.
+      expect(find.byKey(const Key('avatar-busy')), findsOneWidget);
+      expect(find.byKey(const Key('avatar-progress')), findsOneWidget);
+      backend.avatarGate!.complete();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('avatar-progress')), findsNothing);
+      expect(find.text('Foto gespeichert'), findsOneWidget);
+      expect(find.text('Foto ändern'), findsOneWidget);
+      expect(find.byKey(const Key('avatar-remove')), findsOneWidget);
+
+      // Back on the dashboard, the own button shows it.
+      await tester.tap(find.byTooltip('Speichern'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: find.byTooltip('Profil'), matching: find.byKey(const ValueKey('avatar-photo'))), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('lässt sich aus einem anderen Kreis übernehmen, in dem man eines hat', (tester) async {
+      // Without a photo elsewhere there is no button.
+      await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
+      await _openProfileEdit(tester);
+      expect(find.byKey(const Key('avatar-copy')), findsNothing);
+      await disposeApp(tester);
+
+      final backend = FakeBackend()
+        ..extraFamilies = [
+          {'id': 'f2', 'name': 'Kegelclub', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': '', 'avatar': tinyJpegBase64},
+          {'id': 'f3', 'name': 'Chor', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': ''},
+        ];
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await _openProfileEdit(tester);
+      await tester.tap(find.byKey(const Key('avatar-copy')));
+      await tester.pumpAndSettle();
+      // Only the families with a photo of one's own.
+      expect(find.byKey(const Key('avatar-copy-dialog')), findsOneWidget);
+      expect(find.byKey(const Key('avatar-copy-f2')), findsOneWidget);
+      expect(find.byKey(const Key('avatar-copy-f3')), findsNothing);
+      expect(find.descendant(of: find.byKey(const Key('avatar-copy-f2')), matching: find.byKey(const ValueKey('avatar-photo'))), findsOneWidget);
+
+      await tester.tap(find.text('Kegelclub'));
+      await tester.pumpAndSettle();
+      expect(backend.avatarCopiedFrom, ['f2']);
+      expect(find.text('Foto aus Kegelclub übernommen'), findsOneWidget);
+      expect(find.text('Foto ändern'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('erscheint in der Mitgliederliste und lässt sich entfernen', (tester) async {
+      final backend = FakeBackend()..ownAvatar = tinyJpegBase64;
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Familie'));
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: find.byKey(const Key('member-u1')), matching: find.byKey(const ValueKey('avatar-photo'))), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('member-u2')), matching: find.byKey(const ValueKey('avatar-photo'))), findsNothing);
+      await tester.tap(find.text('Anna'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('avatar-large')), findsOneWidget);
+
+      // A tap shows the photo over the whole screen.
+      await tester.tap(find.byKey(const Key('avatar-open')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('avatar-full')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('avatar-full')), matching: find.byType(Image)), findsOneWidget);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await tester.tap(find.byType(CloseButton));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('avatar-full')), findsNothing);
+
+      // Without a photo there is nothing to open.
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ben'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('avatar-open')), findsNothing);
+      await disposeApp(tester);
+
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await _openProfileEdit(tester);
+      // It asks first, and cancelling keeps the photo.
+      await tester.tap(find.byKey(const Key('avatar-remove')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Profilfoto in diesem Kreis entfernen?'), findsOneWidget);
+      await tester.tap(find.text('Abbrechen'));
+      await tester.pumpAndSettle();
+      expect(backend.ownAvatar, isNotEmpty);
+      await tester.tap(find.byKey(const Key('avatar-remove')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Entfernen'));
+      await tester.pumpAndSettle();
+      expect(backend.ownAvatar, isEmpty);
+      expect(find.text('Foto hinzufügen'), findsOneWidget);
+      await disposeApp(tester);
+    });
+  });
+
   testWidgets('im Profil lässt sich auch keine Farbe wählen', (tester) async {
     final backend = FakeBackend()..familyColor = '#1565C0';
     await pumpApp(tester, backend, MemoryTokens()..token = 't1');
@@ -1664,10 +2065,20 @@ void main() {
     await disposeApp(tester);
   });
 
+  testWidgets('Kreis verlassen steht ganz unten in Profil bearbeiten und scrollt nicht mit', (tester) async {
+    await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
+    await _openProfileEdit(tester);
+    final leave = find.byKey(const Key('leave-family'));
+    expect(leave, findsOneWidget);
+    expect(tester.getBottomLeft(leave).dy, tester.getSize(find.byType(Scaffold).last).height);
+    // Outside the form, so it stays where it is while the form scrolls.
+    expect(find.descendant(of: find.byType(ListView), matching: leave), findsNothing);
+    await disposeApp(tester);
+  });
+
   Future<void> openSettings(WidgetTester tester, FakeBackend backend) async {
     await pumpApp(tester, backend, MemoryTokens()..token = 't1');
-    await tester.tap(find.text('Einstellungen'));
-    await tester.pumpAndSettle();
+    await openSettingsPage(tester);
   }
 
   Future<void> chooseRole(WidgetTester tester, String label) async {
@@ -1686,6 +2097,9 @@ void main() {
     expect(find.widgetWithText(Tab, 'Farben'), findsOneWidget);
     expect(find.widgetWithText(Tab, 'Farbverwaltung'), findsNothing);
     expect(find.widgetWithText(Tab, 'Benutzer'), findsNothing);
+    // Categories come last.
+    final lefts = [for (final tab in ['Mitglieder', 'Arbeitsgruppe', 'Farben', 'Kategorien']) tester.getTopLeft(find.widgetWithText(Tab, tab)).dx];
+    expect(lefts, [...lefts]..sort());
 
     // Mitglieder no longer shows the family itself.
     expect(find.text('Ben'), findsOneWidget);
@@ -1705,7 +2119,7 @@ void main() {
     Color? header() => tester.widget<AppBar>(find.byType(AppBar).first).backgroundColor;
     expect(header(), isNull);
 
-    await tester.tap(find.text('Einstellungen'));
+    await tester.tap(find.text('Verwaltung'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(Tab, 'Familie'));
     await tester.pumpAndSettle();
@@ -1716,7 +2130,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(backend.headerColor, '#1565C0');
     // The settings header takes it on right away.
-    final settingsBar = tester.widget<AppBar>(find.widgetWithText(AppBar, 'Einstellungen'));
+    final settingsBar = tester.widget<AppBar>(find.widgetWithText(AppBar, 'Verwaltung'));
     expect(settingsBar.backgroundColor, parseHexColor('#1565C0'));
     expect(settingsBar.foregroundColor, Colors.white);
 
@@ -1763,7 +2177,7 @@ void main() {
 
       await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Einstellungen'));
+      await tester.tap(find.text('Verwaltung'));
       await tester.pumpAndSettle();
       expectPage();
     });
@@ -1789,7 +2203,7 @@ void main() {
       await pumpApp(tester, FakeBackend()..familyType = 'relatives', MemoryTokens()..token = 't1');
       tester.view.physicalSize = const Size(360, 1400);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Einstellungen'));
+      await tester.tap(find.text('Verwaltung'));
       await tester.pumpAndSettle();
 
       for (final area in ['Kategorien', 'Farben']) {
@@ -2105,13 +2519,11 @@ void main() {
         expect(tester.getTopLeft(find.text('Wichtig')).dy, lessThan(tester.getTopLeft(find.text('Allgemein')).dy));
       });
 
-      testWidgets('ohne Admin-Flag nur lesbar', (tester) async {
-        await openArea(tester, FakeBackend()..isAdmin = false, 'Kategorien');
-
-        expect(find.text('Allgemein'), findsOneWidget);
-        expect(find.text('Kategorie hinzufügen'), findsNothing);
-        expect(find.byIcon(Icons.drag_handle), findsNothing);
-        expect(find.byTooltip('Löschen'), findsNothing);
+      testWidgets('ohne Admin-Flag gibt es den Reiter nicht', (tester) async {
+        await openSettings(tester, FakeBackend()..isAdmin = false);
+        expect(find.widgetWithText(Tab, 'Kategorien'), findsNothing);
+        expect(find.byType(Tab), findsNWidgets(3));
+        expect(find.widgetWithText(Tab, 'Farben'), findsOneWidget);
       });
     });
   });
@@ -2395,8 +2807,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(backend.members[1]['managed'], isFalse);
       expect(find.text('Ben kann sich jetzt anmelden.'), findsOneWidget);
-      // Back in the list, where nothing is left to look after.
-      expect(find.text('Verwaltung'), findsNothing);
+      // Back in the list, where nothing is left to look after: only the page is called so.
+      expect(find.text('Verwaltung'), findsOneWidget);
+      expect(find.widgetWithText(AppBar, 'Verwaltung'), findsOneWidget);
       expect(find.widgetWithText(Tab, 'Mitglieder'), findsOneWidget);
       await disposeApp(tester);
     });
@@ -5522,7 +5935,7 @@ void offlineTests() {
       await tester.pumpAndSettle();
 
       // Settings read from the device too, but saving them takes the server.
-      await tester.tap(find.text('Einstellungen'));
+      await tester.tap(find.text('Verwaltung'));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(Tab, 'Familie'));
       await tester.pumpAndSettle();

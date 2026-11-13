@@ -1226,3 +1226,46 @@ func TestMealUpsertAndClear(t *testing.T) {
 		t.Errorf("not cleared: %v", got)
 	}
 }
+
+func TestColorsListWhatIsInUse(t *testing.T) {
+	e := newEnv(t)
+	token := e.register("p@example.de", "P", "F")
+	fid := e.firstFamily(token)
+	base := "/api/families/" + fid
+	inUse := func() []any { return e.expect(200, "GET", base+"/colors", token, nil)["in_use"].([]any) }
+
+	// A new family already shows its calendars in their default colors.
+	got := inUse()
+	for _, want := range []string{"#BBDEFB", calendarColors["tasks"], calendarColors["holidays"], calendarColors["birthdays"], calendarColors["special"], calendarColors["school"]} {
+		if !slices.Contains(got, any(want)) {
+			t.Errorf("%s missing: %v", want, got)
+		}
+	}
+	// Base colors nothing uses yet, for a member, a category, an invitation and a calendar.
+	var unused []string
+	for _, color := range baseColors {
+		if !slices.Contains(got, any(color.Color)) {
+			unused = append(unused, color.Color)
+		}
+	}
+	member, category, invited, free := unused[0], unused[1], unused[2], unused[3]
+
+	// Members, invited people and categories count.
+	me := e.expect(200, "GET", "/api/me", token, nil)["id"].(string)
+	e.expect(204, "PUT", base+"/members/"+me+"/color", token, obj{"color": member})
+	e.expect(201, "POST", base+"/categories", token, obj{"name": "K", "color": category})
+	e.expect(201, "POST", base+"/invitations", token, obj{"email": "n@example.de", "role": "user", "color": invited})
+	got = inUse()
+	for _, want := range []string{member, category, invited} {
+		if !slices.Contains(got, any(want)) {
+			t.Errorf("%s missing: %v", want, got)
+		}
+	}
+
+	// A calendar shows its chosen color instead of its default.
+	e.expect(204, "PUT", base+"/calendars/tasks", token, obj{"enabled": true, "color": free})
+	got = inUse()
+	if !slices.Contains(got, any(free)) || slices.Contains(got, any(calendarColors["tasks"])) {
+		t.Errorf("after choosing a calendar color: %v", got)
+	}
+}

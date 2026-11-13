@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -33,21 +35,44 @@ Color readableOn(Color background) =>
 }
 
 class UserAvatar extends StatelessWidget {
-  const UserAvatar(this.name, {super.key, this.color = ''});
+  const UserAvatar(this.name, {super.key, this.color = '', this.photo = '', this.radius = 18});
 
   final String name;
 
   /// Hex value; empty keeps the default colors of the theme.
   final String color;
 
+  /// The small profile photo as GET members sends it, Base64 JPEG; empty shows the initials.
+  final String photo;
+  final double radius;
+
+  // The same photo shows in many places; decoding it once is enough.
+  static final _decoded = <String, MemoryImage>{};
+
+  static MemoryImage? _image(String photo) {
+    if (photo.isEmpty) return null;
+    final cached = _decoded.remove(photo);
+    if (cached != null) return _decoded[photo] = cached;
+    try {
+      final image = MemoryImage(base64Decode(photo));
+      if (_decoded.length >= 200) _decoded.remove(_decoded.keys.first);
+      return _decoded[photo] = image;
+    } on FormatException {
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final background = color.isEmpty ? null : parseHexColor(color);
+    final image = _image(photo);
     return CircleAvatar(
-      radius: 18,
+      key: image == null ? null : const ValueKey('avatar-photo'),
+      radius: radius,
       backgroundColor: background,
       foregroundColor: background == null ? null : readableOn(background),
-      child: Text(initials(name)),
+      foregroundImage: image,
+      child: Text(initials(name), style: radius > 24 ? TextStyle(fontSize: radius * 0.7) : null),
     );
   }
 }
@@ -106,13 +131,23 @@ class ColorChooser extends StatelessWidget {
   /// One list without headings, with the colors of the family at the end.
   final bool singleList;
 
-  Widget _swatch(BuildContext context, String color, String label) {
+  /// The colors something in the family already shows, in capitals; null from a
+  /// server that does not say, and then every color looks taken as before.
+  Set<String>? get _inUse {
+    final list = colors['in_use'] as List?;
+    return list == null ? null : {for (final color in list) (color as String).toUpperCase()};
+  }
+
+  Widget _swatch(BuildContext context, String color, String label, Set<String>? inUse) {
     final scheme = Theme.of(context).colorScheme;
     final isSelected = color == selected;
     final background = color.isEmpty ? null : parseHexColor(color);
+    // A free color is only a thick ring; what is taken, or chosen here, is filled.
+    final free = background != null && !isSelected && inUse != null && !inUse.contains(color.toUpperCase());
     return Tooltip(
       message: label,
       child: InkWell(
+        key: color.isEmpty ? null : ValueKey('swatch-$color-${free ? 'free' : 'used'}'),
         customBorder: const CircleBorder(),
         onTap: () => onSelected(color),
         child: Container(
@@ -120,9 +155,11 @@ class ColorChooser extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: background,
+            color: free ? null : background,
             border: isSelected
                 ? Border.all(color: scheme.onSurface, width: 3)
+                : free
+                ? Border.all(color: background, width: 5)
                 : Border.all(color: scheme.outlineVariant),
           ),
           child: isSelected
@@ -135,7 +172,7 @@ class ColorChooser extends StatelessWidget {
     );
   }
 
-  Widget _group(BuildContext context, String title, List<dynamic> group) {
+  Widget _group(BuildContext context, String title, List<dynamic> group, Set<String>? inUse) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
@@ -148,7 +185,7 @@ class ColorChooser extends StatelessWidget {
             runSpacing: 14,
             children: [
               for (final entry in group)
-                _swatch(context, entry['color'] as String, entry['label'] as String),
+                _swatch(context, entry['color'] as String, entry['label'] as String, inUse),
             ],
           ),
         ],
@@ -159,28 +196,47 @@ class ColorChooser extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final custom = colors['custom'] as List;
+    final inUse = _inUse;
+    // Says what the filled swatches mean, once the server tells which colors are taken.
+    final legend = inUse == null
+        ? null
+        : Padding(
+            key: const Key('colors-in-use-hint'),
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Farben, die ausgefüllt sind, werden bereits verwendet.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
+          );
     if (singleList) {
-      return Wrap(
+      final swatches = Wrap(
         spacing: 14,
         runSpacing: 14,
         children: [
-          if (allowNone) _swatch(context, '', 'Keine Farbe'),
+          if (allowNone) _swatch(context, '', 'Keine Farbe', inUse),
           for (final entry in [...colors['base'] as List, ...custom])
-            _swatch(context, entry['color'] as String, entry['label'] as String),
+            _swatch(context, entry['color'] as String, entry['label'] as String, inUse),
         ],
+      );
+      if (legend == null) return swatches;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [legend, swatches],
       );
     }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        ?legend,
         if (allowNone)
           Padding(
             padding: const EdgeInsets.only(bottom: 16),
-            child: _swatch(context, '', 'Keine Farbe'),
+            child: _swatch(context, '', 'Keine Farbe', inUse),
           ),
-        if (custom.isNotEmpty) _group(context, 'Eigene Farben', custom),
-        _group(context, 'Stammfarben', colors['base'] as List),
+        if (custom.isNotEmpty) _group(context, 'Eigene Farben', custom, inUse),
+        _group(context, 'Stammfarben', colors['base'] as List, inUse),
       ],
     );
   }

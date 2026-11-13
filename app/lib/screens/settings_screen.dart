@@ -197,16 +197,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (family == null) return const SizedBox.shrink();
     final header = familyHeaderColors(family);
     final onHeader = header.foreground;
+    // Categories are the admins' to manage, and come last.
+    final showCategories = family.isAdmin;
     return DefaultTabController(
-      length: 4,
+      // Another number of tabs needs a controller of its own.
+      key: ValueKey(showCategories),
+      length: showCategories ? 4 : 3,
       child: Scaffold(
         appBar: AppBar(
           backgroundColor: header.background,
           foregroundColor: onHeader,
           scrolledUnderElevation: header.background == null ? null : 0,
-          title: const Text('Einstellungen'),
+          title: const Text('Verwaltung'),
           bottom: TabBar(
-            // Four names do not fit next to each other on a phone.
+            // The names do not fit next to each other on a phone.
             isScrollable: true,
             // On the family's color the theme's tab colors may not be readable.
             labelColor: onHeader,
@@ -216,8 +220,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             tabs: [
               const Tab(text: 'Mitglieder'),
               Tab(text: family.type.label),
-              const Tab(text: 'Kategorien'),
               const Tab(text: 'Farben'),
+              if (showCategories) const Tab(text: 'Kategorien'),
             ],
           ),
         ),
@@ -238,6 +242,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         leading: UserAvatar(
                           member['name'] as String,
                           color: member['color'] as String,
+                          photo: member['avatar'] as String? ?? '',
                         ),
                         title: Text(member['name'] as String),
                         subtitle: Text(_describe(family.type, member)),
@@ -342,8 +347,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             _FamilyTab(family),
-            const CategoriesTab(),
             const ColorsTab(),
+            if (showCategories) const CategoriesTab(),
           ],
         ),
       ),

@@ -140,7 +140,7 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   ListTile(
                     key: const Key('profile-tile'),
-                    leading: UserAvatar(session.displayName, color: family?.color ?? ''),
+                    leading: UserAvatar(session.displayName, color: family?.color ?? '', photo: family?.avatar ?? ''),
                     title: Text(session.displayName),
                     subtitle: Text(session.isManaged ? 'Ohne E-Mail-Adresse' : session.userEmail),
                     trailing: family == null ? null : const Icon(Icons.edit_outlined),

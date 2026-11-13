@@ -4,10 +4,11 @@ import 'package:flutter/material.dart';
 
 import '../common.dart';
 import '../session.dart';
+import 'avatar_crop_screen.dart';
 
 /// The extra fields of a profile in the order they are offered. The keys are what the
 /// backend stores.
-const _fieldLabels = {
+const profileFieldLabels = {
   'phone': 'Telefon',
   'email': 'E-Mail',
   'mobile': 'Handy',
@@ -104,6 +105,152 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   String _memberPath(AppSession session) {
     final member = widget.member;
     return member == null ? session.familyPath : '${session.familyPath}/members/${member['id']}';
+  }
+
+  /// The small photo as shown; null until it changes here, then what the server made.
+  String? _avatar;
+  bool _avatarBusy = false;
+
+  String _currentAvatar(AppSession session) =>
+      _avatar ?? (widget.member?['avatar'] as String? ?? session.current?.avatar ?? '');
+
+  /// The own photo sits at the profile, a managed member's at the member.
+  String _avatarPath(AppSession session) =>
+      widget.member == null ? '${session.familyPath}/profile/avatar' : '${_memberPath(session)}/avatar';
+
+  /// Takes effect at once, apart from saving the form: the photo is cut and sent right away.
+  Future<void> _changeAvatar() async {
+    final session = SessionScope.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final cropped = await pickAndCropAvatar(context);
+    if (cropped == null || !mounted) return;
+    setState(() => _avatarBusy = true);
+    // Shrinking a large photo takes a moment too; the progress shows first.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) return;
+    final ok = await guarded(context, () async {
+      final upload = shrinkForUpload(cropped);
+      final result = await session.api.upload(_avatarPath(session), 'foto.jpg', upload, method: 'PUT');
+      _avatar = (result as Map<String, dynamic>)['avatar'] as String;
+      if (widget.member == null) await session.refresh();
+    });
+    if (mounted) setState(() => _avatarBusy = false);
+    if (ok) messenger.showSnackBar(const SnackBar(content: Text('Foto gespeichert')));
+  }
+
+  /// The own photos of the other families, to take one over; none for a managed member.
+  List<Family> _photosElsewhere(AppSession session) => widget.member != null
+      ? const []
+      : [
+          for (final family in session.families)
+            if (family.id != session.current?.id && family.avatar.isNotEmpty) family,
+        ];
+
+  Future<void> _copyAvatar() async {
+    final session = SessionScope.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final source = await showDialog<Family>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        key: const Key('avatar-copy-dialog'),
+        title: const Text('Foto aus anderem Kreis'),
+        children: [
+          for (final family in _photosElsewhere(session))
+            ListTile(
+              key: Key('avatar-copy-${family.id}'),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+              leading: UserAvatar(family.memberName, color: family.color, photo: family.avatar, radius: 24),
+              title: Text(family.name),
+              subtitle: Text(family.type.label),
+              onTap: () => Navigator.of(context).pop(family),
+            ),
+        ],
+      ),
+    );
+    if (source == null || !mounted) return;
+    setState(() => _avatarBusy = true);
+    final ok = await guarded(context, () async {
+      final result = await session.api.post('${session.familyPath}/profile/avatar/copy', {'family_id': source.id});
+      _avatar = (result as Map<String, dynamic>)['avatar'] as String;
+      await session.refresh();
+    });
+    if (mounted) setState(() => _avatarBusy = false);
+    if (ok) messenger.showSnackBar(SnackBar(content: Text('Foto aus ${source.name} übernommen')));
+  }
+
+  Future<void> _removeAvatar() async {
+    final session = SessionScope.of(context);
+    if (!await confirm(
+      context,
+      widget.member == null
+          ? 'Dein Profilfoto in diesem Kreis entfernen? Dann siehst du wieder deine Initialen.'
+          : 'Das Profilfoto entfernen? Dann sind wieder die Initialen zu sehen.',
+      action: 'Entfernen',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _avatarBusy = true);
+    final ok = await guarded(context, () async {
+      await session.api.delete(_avatarPath(session));
+      _avatar = '';
+      if (widget.member == null) await session.refresh();
+    });
+    if (mounted) setState(() => _avatarBusy = false);
+    if (ok && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Foto entfernt')));
+  }
+
+  Widget _avatarRow(BuildContext context, AppSession session) {
+    final avatar = _currentAvatar(session);
+    return Row(
+      children: [
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            UserAvatar(_name.text, color: _color, photo: avatar, radius: 40),
+            if (_avatarBusy)
+              const SizedBox.square(
+                key: Key('avatar-busy'),
+                dimension: 80,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+          ],
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const Key('avatar-change'),
+                onPressed: _avatarBusy ? null : _changeAvatar,
+                icon: const Icon(Icons.photo_camera_outlined),
+                label: Text(avatar.isEmpty ? 'Foto hinzufügen' : 'Foto ändern'),
+              ),
+              if (_photosElsewhere(session).isNotEmpty)
+                OutlinedButton.icon(
+                  key: const Key('avatar-copy'),
+                  onPressed: _avatarBusy ? null : _copyAvatar,
+                  icon: const Icon(Icons.collections_outlined),
+                  label: const Text('Foto aus anderem Kreis'),
+                ),
+              if (avatar.isNotEmpty)
+                TextButton(
+                  key: const Key('avatar-remove'),
+                  onPressed: _avatarBusy ? null : _removeAvatar,
+                  child: const Text('Foto entfernen'),
+                ),
+              if (_avatarBusy)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: LinearProgressIndicator(key: Key('avatar-progress')),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   String _savedColor = '';
@@ -211,7 +358,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
             'Solange es in ${family.name} weitere Mitglieder gibt, kannst du den Kreis nicht verlassen. '
             // Nobody without an address can become an admin, so the usual advice would lead nowhere.
             '${people.every((member) => member['managed'] == true) ? 'Die anderen haben keine E-Mail-Adresse und können deshalb kein Admin werden. '
-                      'Gib einem von ihnen unter Einstellungen → Mitglieder eine E-Mail-Adresse und mache es zum Admin, oder lösche sie dort.' : 'Mache zuerst ein anderes Mitglied zum Admin.'}',
+                      'Gib einem von ihnen unter Verwaltung → Mitglieder eine E-Mail-Adresse und mache es zum Admin, oder lösche sie dort.' : 'Mache zuerst ein anderes Mitglied zum Admin.'}',
           ),
           actions: [
             FilledButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
@@ -229,7 +376,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
           title: const Text('Du bist der letzte Admin'),
           content: Text(
             'In ${family.name} gibt es noch Mitglieder, die den Kreis verlassen haben. '
-            'Lösche sie zuerst unter Einstellungen → Mitglieder endgültig. Erst dann kannst du den Kreis verlassen.',
+            'Lösche sie zuerst unter Verwaltung → Mitglieder endgültig. Erst dann kannst du den Kreis verlassen.',
           ),
           actions: [
             FilledButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
@@ -280,7 +427,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
             minLines: 1,
             maxLines: field.kind == 'address' ? 4 : 1,
             maxLength: 500,
-            decoration: InputDecoration(labelText: _fieldLabels[field.kind], counterText: ''),
+            decoration: InputDecoration(labelText: profileFieldLabels[field.kind], counterText: ''),
           ),
         ),
         IconButton(
@@ -302,7 +449,7 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
       alignment: Alignment.centerLeft,
       child: MenuAnchor(
         menuChildren: [
-          for (final entry in _fieldLabels.entries)
+          for (final entry in profileFieldLabels.entries)
             MenuItemButton(
               onPressed: () => setState(() => _fields.add(_ExtraField(entry.key, '', isNew: true))),
               child: Text(entry.value),
@@ -321,10 +468,12 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
   Widget _form(BuildContext context, AppSession session, Family family, _ProfileData data) {
     _fill(data.profile);
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 48),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
         Text('Diese Angaben gelten im Kreis ${family.name}.', style: Theme.of(context).textTheme.bodySmall),
         const SizedBox(height: 16),
+        _avatarRow(context, session),
+        const SizedBox(height: 24),
         TextField(
           key: const Key('profile-name'),
           controller: _name,
@@ -394,20 +543,26 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
               const Expanded(child: Text('Deine Profilfarbe kann nur ein Admin ändern.')),
             ],
           ),
-        // Without an address only an admin can take someone out, for good.
-        if (widget.member == null && !session.isManaged) ...[
-          const SizedBox(height: 24),
-          const Divider(height: 1),
-          ListTile(
-            key: const Key('leave-family'),
-            contentPadding: EdgeInsets.zero,
-            textColor: Theme.of(context).colorScheme.error,
-            iconColor: Theme.of(context).colorScheme.error,
-            title: Text('Den Kreis ${family.name} verlassen'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _leaveFamily(family),
-          ),
-        ],
+      ],
+    );
+  }
+
+  /// Down at the foot of the page, as signing out is in the profile.
+  Widget _leaveFooter(BuildContext context, Family family) {
+    final error = Theme.of(context).colorScheme.error;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Divider(height: 1),
+        ListTile(
+          key: const Key('leave-family'),
+          textColor: error,
+          iconColor: error,
+          leading: const Icon(Icons.exit_to_app),
+          title: Text('Den Kreis ${family.name} verlassen'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => _leaveFamily(family),
+        ),
       ],
     );
   }
@@ -439,15 +594,25 @@ class _ProfileEditScreenState extends State<ProfileEditScreen> {
             ),
           ],
         ),
-        body: AsyncView<_ProfileData>(
-          load: () async {
-            final results = await Future.wait([
-              session.api.get('${_memberPath(session)}/profile'),
-              session.api.get('${session.familyPath}/colors'),
-            ]);
-            return _ProfileData(results[0] as Map<String, dynamic>, results[1] as Map<String, dynamic>);
-          },
-          builder: (context, data) => _form(context, session, family, data),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: AsyncView<_ProfileData>(
+                  load: () async {
+                    final results = await Future.wait([
+                      session.api.get('${_memberPath(session)}/profile'),
+                      session.api.get('${session.familyPath}/colors'),
+                    ]);
+                    return _ProfileData(results[0] as Map<String, dynamic>, results[1] as Map<String, dynamic>);
+                  },
+                  builder: (context, data) => _form(context, session, family, data),
+                ),
+              ),
+              // Without an address only an admin can take someone out, for good.
+              if (widget.member == null && !session.isManaged) _leaveFooter(context, family),
+            ],
+          ),
         ),
       ),
     );

@@ -448,7 +448,7 @@ class _MemberFilterScreenState extends State<_MemberFilterScreen> {
                 const Divider(height: 1),
                 for (final member in members)
                   CheckboxListTile(
-                    secondary: UserAvatar(member['name'] as String, color: member['color'] as String),
+                    secondary: UserAvatar(member['name'] as String, color: member['color'] as String, photo: member['avatar'] as String? ?? ''),
                     title: Text(member['name'] as String),
                     value: selected.contains(member['id']),
                     onChanged: (on) {

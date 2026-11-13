@@ -8,6 +8,7 @@ import 'offline_cache.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'session.dart';
+import 'session_sync.dart';
 import 'update_check.dart';
 
 const seedColor = Color(0xFF2E6B57);
@@ -23,6 +24,7 @@ Future<void> main() async {
   // Before the first frame, or the app would start in the wrong design.
   await session.loadThemeMode();
   session.start();
+  SessionSync(session: session).start();
   final updates = UpdateCheck(api: api)..start();
   runApp(KinturaApp(session: session, updates: updates));
 }

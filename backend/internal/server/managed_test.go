@@ -91,10 +91,10 @@ func TestAdminKeepsProfileOfManagedMember(t *testing.T) {
 		t.Errorf("birthday: %s", titlesOf(entries))
 	}
 
-	e.expect(403, "GET", path, other, nil)
+	// Everyone in the family reads a profile; changing it is the admin's, and only for the managed.
+	e.expect(200, "GET", path, other, nil)
 	e.expect(403, "PUT", path, other, obj{"name": "X"})
-	// Only the managed: people with an account keep their profile to themselves.
-	e.expect(403, "GET", base+"/members/"+otherID+"/profile", admin, nil)
+	e.expect(200, "GET", base+"/members/"+otherID+"/profile", admin, nil)
 	e.expect(403, "PUT", base+"/members/"+otherID+"/profile", admin, obj{"name": "X"})
 	e.expect(404, "GET", base+"/members/nix/profile", admin, nil)
 	foreign := e.register("c@example.de", "C", "G")
@@ -140,8 +140,9 @@ func TestManagedMemberGetsNewAccountWithCode(t *testing.T) {
 	if got["managed"] != false || got["email"] != "lina@example.de" || got["name"] != "Lina" {
 		t.Errorf("after: %v", got)
 	}
-	// From now on it is a person: the admin is out, and the login works.
-	e.expect(403, "GET", base+"/members/"+id+"/profile", admin, nil)
+	// From now on it is a person: the admin only reads, and the login works.
+	e.expect(200, "GET", base+"/members/"+id+"/profile", admin, nil)
+	e.expect(403, "PUT", base+"/members/"+id+"/profile", admin, obj{"name": "X"})
 	e.expect(403, "POST", path, admin, obj{"email": "x@example.de"})
 	login, loginCode := e.startLogin("lina@example.de")
 	out := e.expect(200, "POST", "/api/auth/verify", "", obj{"request_id": login, "code": loginCode})
