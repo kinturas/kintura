@@ -3,7 +3,7 @@
     "short_name": "Kintura",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#f4f7f5",
+    "background_color": "#121815",
     "theme_color": "#2E6B57",
     "description": "A new Flutter project.",
     "orientation": "portrait-primary",

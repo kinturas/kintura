@@ -162,16 +162,18 @@ class AppSession extends ChangeNotifier {
   final TokenStore tokens;
   final ThemeStore? themes;
 
-  /// Follows the device until something else is chosen.
-  final themeMode = ValueNotifier(ThemeMode.system);
+  /// Kintura starts dark; light, or following the device, is a choice in the profile.
+  static const defaultThemeMode = ThemeMode.dark;
+
+  final themeMode = ValueNotifier(defaultThemeMode);
 
   /// A design that cannot be read or kept is no reason to stop the app.
   Future<void> loadThemeMode() async {
     try {
       final stored = await themes?.read();
-      themeMode.value = ThemeMode.values.asNameMap()[stored] ?? ThemeMode.system;
+      themeMode.value = ThemeMode.values.asNameMap()[stored] ?? defaultThemeMode;
     } catch (_) {
-      themeMode.value = ThemeMode.system;
+      themeMode.value = defaultThemeMode;
     }
   }
 

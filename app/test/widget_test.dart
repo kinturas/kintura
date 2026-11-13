@@ -1562,49 +1562,45 @@ void main() {
     final automatic = find.byKey(const Key('dark-automatic'));
     final manual = find.byKey(const Key('dark-mode'));
 
-    testWidgets('Automatisch ist Vorgabe und folgt dem Gerät', (tester) async {
-      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+    testWidgets('Dunkel ist Vorgabe, auch wenn das Gerät hell ist', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: MemoryThemes());
       expect(brightness(tester), Brightness.dark);
 
-      tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
-      await tester.pumpAndSettle();
-      expect(brightness(tester), Brightness.light);
-
       await openProfile(tester);
-      expect(tester.widget<SwitchListTile>(automatic).value, isTrue);
-      expect(manual, findsNothing);
+      expect(tester.widget<SwitchListTile>(automatic).value, isFalse);
+      expect(tester.widget<SwitchListTile>(manual).value, isTrue);
     });
 
-    testWidgets('von Hand übernimmt es erst den Stand und gilt dann gegen das Gerät', (tester) async {
-      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+    testWidgets('hell und automatisch lassen sich wählen und gelten gegen die Vorgabe', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
       final themes = MemoryThemes();
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: themes);
       await openProfile(tester);
-
-      // Nothing jumps when taking over by hand.
-      await tester.tap(automatic);
-      await tester.pumpAndSettle();
-      expect(brightness(tester), Brightness.dark);
-      expect(themes.mode, 'dark');
-      expect(tester.widget<SwitchListTile>(manual).value, isTrue);
 
       await tester.tap(manual);
       await tester.pumpAndSettle();
       expect(brightness(tester), Brightness.light);
       expect(themes.mode, 'light');
 
-      // Back to following the device.
+      // Following the device, which is light here.
+      await tester.tap(automatic);
+      await tester.pumpAndSettle();
+      expect(themes.mode, 'system');
+      expect(manual, findsNothing);
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      await tester.pumpAndSettle();
+      expect(brightness(tester), Brightness.dark);
+
+      // Taking over by hand starts with what is on the screen, so nothing jumps.
       await tester.tap(automatic);
       await tester.pumpAndSettle();
       expect(brightness(tester), Brightness.dark);
-      expect(themes.mode, 'system');
-      expect(manual, findsNothing);
+      expect(themes.mode, 'dark');
 
-      await tester.tap(automatic);
-      await tester.pumpAndSettle();
+      // The choice outlasts signing out.
       await tester.tap(manual);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Abmelden'));
@@ -1613,21 +1609,21 @@ void main() {
     });
 
     testWidgets('die Wahl gilt beim nächsten Start wieder', (tester) async {
-      await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: MemoryThemes()..mode = 'dark');
-      expect(brightness(tester), Brightness.dark);
+      await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: MemoryThemes()..mode = 'light');
+      expect(brightness(tester), Brightness.light);
     });
 
-    testWidgets('ein unbekannter oder nicht lesbarer Wert startet automatisch', (tester) async {
+    testWidgets('ein unbekannter oder nicht lesbarer Wert startet dunkel', (tester) async {
       final unknown = await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: MemoryThemes()..mode = 'lila');
-      expect(unknown.themeMode.value, ThemeMode.system);
+      expect(unknown.themeMode.value, ThemeMode.dark);
       final themes = MemoryThemes()..broken = true;
       final broken = await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1', themes: themes);
-      expect(broken.themeMode.value, ThemeMode.system);
+      expect(broken.themeMode.value, ThemeMode.dark);
 
       // Without a place to keep it, it still holds for now.
-      await broken.setThemeMode(ThemeMode.dark);
+      await broken.setThemeMode(ThemeMode.light);
       await tester.pumpAndSettle();
-      expect(brightness(tester), Brightness.dark);
+      expect(brightness(tester), Brightness.light);
     });
 
     testWidgets('die Auswahl passt auf ein schmales Handy', (tester) async {
@@ -1635,12 +1631,11 @@ void main() {
       await openProfile(tester);
       tester.view.physicalSize = const Size(320, 800);
       await tester.pumpAndSettle();
-      await tester.dragUntilVisible(automatic, find.byType(ListView), const Offset(0, -200));
-      await tester.pumpAndSettle();
-      await tester.tap(automatic);
-      await tester.pumpAndSettle();
       await tester.dragUntilVisible(manual, find.byType(ListView), const Offset(0, -200));
       await tester.pumpAndSettle();
+      await tester.tap(manual);
+      await tester.pumpAndSettle();
+      expect(brightness(tester), Brightness.light);
       await tester.tap(manual);
       await tester.pumpAndSettle();
       expect(brightness(tester), Brightness.dark);

@@ -35,10 +35,8 @@
 
   <!-- Splash screen: visible immediately, until Flutter draws its first frame. -->
   <style>
-    :root { --splash-bg: #f4f7f5; --splash-fg: #2e6b57; --splash-muted: #5f6f68; --splash-track: rgba(46, 107, 87, 0.18); }
-    @media (prefers-color-scheme: dark) {
-      :root { --splash-bg: #121815; --splash-fg: #8fd3b5; --splash-muted: #a3b3ab; --splash-track: rgba(143, 211, 181, 0.2); }
-    }
+    /* Dark like the app starts; a light design chosen in the app only applies once it runs. */
+    :root { --splash-bg: #121815; --splash-fg: #8fd3b5; --splash-muted: #a3b3ab; --splash-track: rgba(143, 211, 181, 0.2); }
     html, body { margin: 0; height: 100%; background: var(--splash-bg); }
     #splash {
       position: fixed; inset: 0; z-index: 9999;
