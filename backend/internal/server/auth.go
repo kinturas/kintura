@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html/template"
-	"log"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -66,18 +64,19 @@ func (s *Server) authRequest(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	requestID, linkToken := randomHex(32), randomHex(32)
+	requestID := randomHex(32)
 	expires := time.Now().UTC().Add(loginTTL)
+	// link_hash is left from the login links that mails once carried; it only has to be unique.
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO login_requests (id_hash, email, code_hash, link_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		hashToken(requestID), email, hashCode(requestID, code), hashToken(linkToken), expires.Format(timeFormat), now()); err != nil {
+		hashToken(requestID), email, hashCode(requestID, code), hashToken(randomHex(32)), expires.Format(timeFormat), now()); err != nil {
 		return err
 	}
 
+	// The code alone: it is typed into the app, and no link in a mail logs anyone in.
 	body := fmt.Sprintf("Hallo,\n\ndein Anmeldecode für Kintura lautet:\n\n    %s\n\n"+
-		"Alternativ kannst du die Anmeldung über diesen Link bestätigen:\n%s/login?token=%s\n\n"+
-		"Code und Link sind 15 Minuten gültig. Falls du das nicht warst, ignoriere diese Mail einfach.\n",
-		code, s.publicURL, linkToken)
+		"Gib ihn in der App ein. Er ist 15 Minuten gültig. Falls du das nicht warst, ignoriere diese Mail einfach.\n\n%s",
+		code, s.appLinks())
 	if err := s.mailer.Send(email, "Dein Anmeldecode für Kintura", body); err != nil {
 		scopeOf(r).email = email
 		return &apiError{http.StatusBadGateway, "Die E-Mail konnte nicht versendet werden.", fmt.Errorf("Anmelde-Mail: %w", err)}
@@ -144,26 +143,6 @@ func (s *Server) authVerify(w http.ResponseWriter, r *http.Request) error {
 	return s.finishVerified(w, r, lr)
 }
 
-// authPoll lets the app wait for the user to confirm the mail link, which works
-// on every platform and even when the mail is opened on another device.
-func (s *Server) authPoll(w http.ResponseWriter, r *http.Request) error {
-	var in struct {
-		RequestID string `json:"request_id"`
-	}
-	if err := readJSON(w, r, &in); err != nil {
-		return err
-	}
-	lr, err := s.openRequest(r.Context(), in.RequestID)
-	if err != nil {
-		return err
-	}
-	if !lr.verified {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "pending"})
-		return nil
-	}
-	return s.finishVerified(w, r, lr)
-}
-
 // finishVerified logs in a known user or asks the app to show the registration.
 // The mailbox is proven at this point, so revealing the account state is safe.
 func (s *Server) finishVerified(w http.ResponseWriter, r *http.Request, lr *loginRequest) error {
@@ -171,14 +150,9 @@ func (s *Server) finishVerified(w http.ResponseWriter, r *http.Request, lr *logi
 	var userID string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email = ?`, lr.email).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		invited, err := queryRows(ctx, s.db,
-			`SELECT f.name FROM invitations i JOIN families f ON f.id = i.family_id WHERE i.email = ? ORDER BY f.name`, lr.email)
+		names, err := s.invitedFamilyNames(ctx, lr.email)
 		if err != nil {
 			return err
-		}
-		names := []any{}
-		for _, row := range invited {
-			names = append(names, row["name"])
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "registration_required", "email": lr.email, "invited_families": names,
@@ -208,6 +182,21 @@ func (s *Server) finishVerified(w http.ResponseWriter, r *http.Request, lr *logi
 	return nil
 }
 
+// invitedFamilyNames are the families that invited someone about to register, the
+// earliest first: that one they join with the registration, see firstInvitation.
+func (s *Server) invitedFamilyNames(ctx context.Context, email string) ([]any, error) {
+	invited, err := queryRows(ctx, s.db,
+		`SELECT f.name FROM invitations i JOIN families f ON f.id = i.family_id WHERE i.email = ? ORDER BY i.created_at, i.id`, email)
+	if err != nil {
+		return nil, err
+	}
+	names := []any{}
+	for _, row := range invited {
+		names = append(names, row["name"])
+	}
+	return names, nil
+}
+
 func consumeRequest(ctx context.Context, tx *database.Tx, idHash string) error {
 	res, err := tx.ExecContext(ctx,
 		`UPDATE login_requests SET consumed_at = ? WHERE id_hash = ? AND consumed_at IS NULL`, now(), idHash)
@@ -227,13 +216,9 @@ func createSession(ctx context.Context, q dbtx, userID string, ttl time.Duration
 	return token, err
 }
 
-// acceptInvitations turns pending invitations into memberships. The address was
-// proven at login, so an invitation for it can only reach its owner.
-func acceptInvitations(ctx context.Context, q dbtx, userID, email string) error {
-	return acceptInvitationsOf(ctx, q, userID, email, "")
-}
-
-// acceptInvitationsOf limits that to one family, unless familyID is empty.
+// acceptInvitationsOf turns the invitation of one family into a membership. Each one
+// takes the owner's yes: at the registration for the first, in the app for the others,
+// or the code from the mail. With an empty familyID it would take them all.
 func acceptInvitationsOf(ctx context.Context, q dbtx, userID, email, familyID string) error {
 	if _, err := q.ExecContext(ctx,
 		`INSERT INTO memberships (family_id, user_id, role, is_admin, color, can_change_color, name, birthday, family_role, contact_email, profile_fields)
@@ -283,13 +268,15 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var invited int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invitations WHERE email = ?`, lr.email).Scan(&invited); err != nil {
+	// Invited users join an existing family and need not create their own: the one
+	// that asked first. Any others wait in the app, to be accepted like by anyone.
+	var firstInvitation string
+	err = s.db.QueryRowContext(ctx, `SELECT family_id FROM invitations WHERE email = ? ORDER BY created_at, id LIMIT 1`, lr.email).Scan(&firstInvitation)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	// Invited users join an existing family and need not create their own.
 	familyName := strings.TrimSpace(in.FamilyName)
-	createFamily := familyName != "" || invited == 0
+	createFamily := familyName != "" || firstInvitation == ""
 	var familyType string
 	if createFamily {
 		if familyType, err = validFamilyType(in.FamilyType, "family"); err != nil {
@@ -315,8 +302,13 @@ func (s *Server) authRegister(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
-	if err := acceptInvitations(ctx, tx, userID, lr.email); err != nil {
-		return err
+	if firstInvitation != "" {
+		if err := acceptInvitationsOf(ctx, tx, userID, lr.email, firstInvitation); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET last_family_id = ? WHERE id = ?`, firstInvitation, userID); err != nil {
+			return err
+		}
 	}
 	if createFamily {
 		familyID, err := insertFamily(ctx, tx, familyName, familyType, userID)
@@ -344,68 +336,4 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request, c reqCtx) er
 		return err
 	}
 	return noContent(w)
-}
-
-var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kintura Anmeldung</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#f4f6f5;color:#1c2421;display:flex;justify-content:center;padding:48px 16px;margin:0}
-main{background:#fff;border-radius:16px;padding:32px;max-width:420px;width:100%;box-shadow:0 2px 12px #0001}
-h1{font-size:1.4rem;margin-top:0}
-button{background:#2e6b57;color:#fff;border:0;border-radius:24px;padding:12px 24px;font-size:1rem;cursor:pointer;width:100%}
-</style></head><body><main>
-{{if eq .State "confirm"}}
-<h1>Anmeldung bestätigen</h1>
-<p>Für <strong>{{.Email}}</strong> wurde eine Anmeldung bei Kintura gestartet.</p>
-<p>Bestätige nur, wenn du das gerade selbst warst.</p>
-<form method="post" action="/login"><input type="hidden" name="token" value="{{.Token}}"><button type="submit">Ja, das war ich</button></form>
-{{else if eq .State "done"}}
-<h1>Bestätigt</h1><p>Du kannst dieses Fenster schließen und zu Kintura zurückkehren.</p>
-{{else}}
-<h1>Link ungültig</h1><p>Dieser Link ist abgelaufen oder wurde bereits verwendet. Bitte starte die Anmeldung in der App neu.</p>
-{{end}}
-</main></body></html>`))
-
-func (s *Server) renderLogin(w http.ResponseWriter, status int, state, email, token string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.WriteHeader(status)
-	if err := loginTemplate.Execute(w, map[string]string{"State": state, "Email": email, "Token": token}); err != nil {
-		log.Printf("login page: %v", err)
-	}
-}
-
-// loginPage only shows a confirmation: mail scanners fetch links, so a plain GET
-// must not verify anything.
-func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	var email string
-	err := s.db.QueryRowContext(r.Context(),
-		`SELECT email FROM login_requests WHERE link_hash = ? AND consumed_at IS NULL AND verified_at IS NULL AND expires_at > ?`,
-		hashToken(token), now()).Scan(&email)
-	if err != nil {
-		s.renderLogin(w, http.StatusGone, "invalid", "", "")
-		return
-	}
-	s.renderLogin(w, http.StatusOK, "confirm", email, token)
-}
-
-func (s *Server) loginConfirm(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	res, err := s.db.ExecContext(r.Context(),
-		`UPDATE login_requests SET verified_at = ?
-		 WHERE link_hash = ? AND consumed_at IS NULL AND verified_at IS NULL AND expires_at > ?`,
-		now(), hashToken(r.PostFormValue("token")), now())
-	if err != nil {
-		s.logError(r, http.StatusInternalServerError, "Anmeldung bestätigen: "+err.Error())
-		s.renderLogin(w, http.StatusInternalServerError, "invalid", "", "")
-		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		s.renderLogin(w, http.StatusGone, "invalid", "", "")
-		return
-	}
-	s.renderLogin(w, http.StatusOK, "done", "", "")
 }

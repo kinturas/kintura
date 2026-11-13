@@ -8,7 +8,6 @@ import 'package:kintura/screens/calendar_agenda.dart';
 import 'package:kintura/screens/calendar_views.dart';
 import 'package:kintura/screens/event_detail_screen.dart';
 import 'package:kintura/screens/event_edit_screen.dart';
-import 'package:kintura/screens/login_screen.dart';
 import 'package:kintura/screens/special_days_screen.dart';
 import 'package:kintura/session.dart';
 import 'package:flutter/foundation.dart';
@@ -70,6 +69,9 @@ class FakeBackend {
   /// The server is down behind a proxy, which answers with 502 and no message.
   bool proxyDown = false;
   bool registered = false;
+
+  /// Families that invited the address that registers, the earliest first.
+  List<String> invitedFamilies = [];
   final calls = <String>[];
   final ranges = <(DateTime, DateTime)>[];
   Map<String, dynamic>? registerBody;
@@ -123,6 +125,10 @@ class FakeBackend {
   bool isAdmin = true;
   String role = 'manager';
   List<Map<String, Object>> extraFamilies = [];
+
+  /// Open invitations to the user, as GET me lists them.
+  List<Map<String, Object>> myInvitations = [];
+  final answered = <String>[];
   bool rejectUploads = false;
   final writes = <String, Object?>{};
   final placeQueries = <String>[];
@@ -201,8 +207,6 @@ class FakeBackend {
         };
       case '/api/auth/request':
         response = {'request_id': 'r1'};
-      case '/api/auth/poll':
-        response = {'status': 'pending'};
       case '/api/auth/verify':
         if (body['code'] != '123456') {
           return _json({'error': 'Der Code ist falsch.'}, 400);
@@ -212,7 +216,7 @@ class FakeBackend {
             : {
                 'status': 'registration_required',
                 'email': 'anna@example.de',
-                'invited_families': <String>[],
+                'invited_families': invitedFamilies,
               };
       case '/api/auth/code':
         if (body['code'] != 'ABCD-EFGH-JKLM') {
@@ -238,7 +242,20 @@ class FakeBackend {
           'managed': managed,
           'families': [if (leaveBody == null) _family, ...extraFamilies],
           'last_family_id': leaveBody == null ? 'f1' : null,
+          'invitations': myInvitations,
         };
+      case final path when path.startsWith('/api/invitations/'):
+        answered.add(path);
+        final id = path.split('/')[3];
+        final invitation = myInvitations.firstWhere((i) => i['id'] == id);
+        myInvitations.remove(invitation);
+        if (path.endsWith('/accept')) {
+          extraFamilies.add({
+            'id': invitation['family_id']!, 'name': invitation['family_name']!, 'type': 'friends',
+            'role': 'user', 'is_admin': false, 'color': '',
+          });
+        }
+        response = {'family_id': invitation['family_id']};
       case '/api/families':
         createBody = body as Map<String, dynamic>;
         response = {'id': 'f2'};
@@ -484,12 +501,63 @@ Future<void> disposeApp(WidgetTester tester) async {
 void main() {
   setUpAll(() async {
     await initializeDateFormatting('de');
-    LoginScreen.pollInterval = const Duration(hours: 1);
   });
   // Folding the grid lasts while the app is open, which here means across tests.
   setUp(AgendaViewState.showMonth);
 
   group('Termine', eventTests);
+
+    group('Einladungen', () {
+      final invitation = {'id': 'i1', 'family_id': 'f9', 'family_name': 'Kegelclub', 'family_type': 'friends'};
+
+      testWidgets('erscheinen auf dem Dashboard, und erst Beitreten nimmt sie an', (tester) async {
+        final backend = FakeBackend()..myInvitations = [{...invitation}];
+        await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+        expect(find.text('Einladung: Kegelclub'), findsOneWidget);
+        expect(find.textContaining('Freundeskreis lädt dich ein'), findsOneWidget);
+        // Opening the app answered nothing.
+        expect(backend.answered, isEmpty);
+
+        await tester.tap(find.text('Beitreten'));
+        await tester.pumpAndSettle();
+        expect(backend.answered, ['/api/invitations/i1/accept']);
+        expect(find.text('Einladung: Kegelclub'), findsNothing);
+        await disposeApp(tester);
+      });
+
+      testWidgets('Ablehnen fragt nach und nimmt sie nicht an', (tester) async {
+        final backend = FakeBackend()..myInvitations = [{...invitation}];
+        await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+        await tester.tap(find.text('Ablehnen'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Die Einladung von Kegelclub ablehnen?'), findsOneWidget);
+        await tester.tap(find.text('Abbrechen'));
+        await tester.pumpAndSettle();
+        expect(backend.answered, isEmpty);
+
+        await tester.tap(find.text('Ablehnen'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Ablehnen'));
+        await tester.pumpAndSettle();
+        expect(backend.answered, ['/api/invitations/i1/decline']);
+        expect(find.text('Einladung: Kegelclub'), findsNothing);
+        expect(backend.extraFamilies, isEmpty);
+        await disposeApp(tester);
+      });
+
+      testWidgets('ohne Kreis lässt sich einer Einladung beitreten', (tester) async {
+        final backend = FakeBackend()
+          ..leaveBody = {}
+          ..myInvitations = [{...invitation}];
+        await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+        expect(find.text('Du gehörst noch zu keinem Kreis.'), findsOneWidget);
+        expect(find.text('Einladung: Kegelclub'), findsOneWidget);
+        await tester.tap(find.text('Beitreten'));
+        await tester.pumpAndSettle();
+        expect(backend.answered, ['/api/invitations/i1/accept']);
+        await disposeApp(tester);
+      });
+    });
   group('Kalender', calendarTests);
   offlineTests();
 
@@ -593,6 +661,67 @@ void main() {
       await openDialog(tester, FakeBackend(), MemoryTokens());
       expect(tester.takeException(), isNull);
       expect(find.byKey(field), findsOneWidget);
+      await disposeApp(tester);
+    });
+  });
+
+  testWidgets('Login sagt, dass es eine Testversion ist, und nennt die Version', (tester) async {
+    PackageInfo.setMockInitialValues(
+      appName: 'Kintura',
+      packageName: 'kintura',
+      version: '0.0.7',
+      buildNumber: '12',
+      buildSignature: '',
+    );
+    await pumpApp(tester, FakeBackend(), MemoryTokens());
+    expect(find.byKey(const Key('beta-notice')), findsOneWidget);
+    expect(find.text('Beta · Testversion'), findsOneWidget);
+    expect(find.textContaining('bis zur Version 1.0.0 kann sich noch einiges ändern'), findsOneWidget);
+    expect(find.text('Version 0.0.7 (12)'), findsOneWidget);
+    // Not part of the notice, but down in the right corner of the screen.
+    final version = find.byKey(const Key('app-version'));
+    expect(find.descendant(of: find.byKey(const Key('beta-notice')), matching: version), findsNothing);
+    final page = tester.getRect(find.byType(Scaffold).first);
+    expect(tester.getBottomRight(version).dx, closeTo(page.right - 16, 1));
+    expect(tester.getBottomRight(version).dy, greaterThan(page.bottom - 40));
+    // Above what is asked for, so that it is read first.
+    expect(tester.getTopLeft(find.byKey(const Key('beta-notice'))).dy, lessThan(tester.getTopLeft(find.byKey(const Key('email'))).dy));
+    await disposeApp(tester);
+  });
+
+  group('Registrierung mit Einladung', () {
+    testWidgets('braucht nur den Namen, ohne eigenen Kreis', (tester) async {
+      final backend = FakeBackend()..invitedFamilies = ['Müller'];
+      await pumpApp(tester, backend, MemoryTokens());
+      await enterEmailAndCode(tester, '123456');
+      expect(find.byKey(const Key('invited-into')), findsOneWidget);
+      expect(find.textContaining('trittst Müller bei'), findsOneWidget);
+      expect(find.byKey(const Key('family')), findsNothing);
+      expect(find.byKey(const Key('family-type')), findsNothing);
+
+      await tester.enterText(find.byKey(const Key('name')), 'Anna');
+      await tester.tap(find.widgetWithText(FilledButton, 'Registrieren'));
+      await tester.pumpAndSettle();
+      expect(backend.registerBody, {'request_id': 'r1', 'name': 'Anna', 'family_name': '', 'family_type': 'family'});
+      await disposeApp(tester);
+    });
+
+    testWidgets('mit mehreren Einladungen sagt sie, dass die anderen in der App warten', (tester) async {
+      final backend = FakeBackend()..invitedFamilies = ['Müller', 'Kegelclub', 'Chor'];
+      await pumpApp(tester, backend, MemoryTokens());
+      await enterEmailAndCode(tester, '123456');
+      expect(find.textContaining('trittst Müller bei'), findsOneWidget);
+      expect(find.textContaining('Die Einladungen von Kegelclub, Chor kannst du danach in der App annehmen.'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('der Code-Schritt kennt keinen Link mehr', (tester) async {
+      await pumpApp(tester, FakeBackend(), MemoryTokens());
+      await tester.enterText(find.byKey(const Key('email')), 'anna@example.de');
+      await tester.tap(find.text('Weiter'));
+      await tester.pumpAndSettle();
+      expect(find.text('Wir haben eine E-Mail an anna@example.de geschickt. Gib den Code aus der Mail ein.'), findsOneWidget);
+      expect(find.textContaining('Link'), findsNothing);
       await disposeApp(tester);
     });
   });
@@ -861,6 +990,8 @@ void main() {
       testWidgets('geht über einen Code an die neue Adresse', (tester) async {
         final backend = await open(tester);
         await openDialog(tester);
+        // The own address needs no warning: the code goes to oneself.
+        expect(find.byKey(const Key('email-warning')), findsNothing);
         await tester.enterText(find.byKey(const Key('new-email')), ' neu@example.de ');
         await tester.tap(find.text('Code senden'));
         await tester.pumpAndSettle();
@@ -2157,9 +2288,9 @@ void main() {
       final backend = FakeBackend();
       await openSettings(tester, backend);
       expect(find.text('Mitglied einladen'), findsOneWidget);
-      await tester.tap(find.text('Benutzer hinzufügen'));
+      await tester.tap(find.text('Benutzer ohne E-Mail hinzufügen'));
       await tester.pumpAndSettle();
-      expect(find.widgetWithText(AppBar, 'Benutzer hinzufügen'), findsOneWidget);
+      expect(find.widgetWithText(AppBar, 'Benutzer ohne E-Mail hinzufügen'), findsOneWidget);
       expect(find.text('Admin'), findsNothing);
       expect(find.textContaining('E-Mail-Adresse *'), findsNothing);
 
@@ -2181,7 +2312,7 @@ void main() {
         'color': '#1565C0',
         'can_change_color': true,
       });
-      expect(find.widgetWithText(AppBar, 'Benutzer hinzufügen'), findsNothing);
+      expect(find.widgetWithText(AppBar, 'Benutzer ohne E-Mail hinzufügen'), findsNothing);
       await disposeApp(tester);
     });
 
@@ -2209,7 +2340,7 @@ void main() {
 
     testWidgets('ohne Admin-Rechte gibt es den Button nicht', (tester) async {
       await openSettings(tester, FakeBackend()..isAdmin = false);
-      expect(find.text('Benutzer hinzufügen'), findsNothing);
+      expect(find.text('Benutzer ohne E-Mail hinzufügen'), findsNothing);
       await disposeApp(tester);
     });
 
@@ -2248,6 +2379,11 @@ void main() {
       await tester.tap(find.byKey(const Key('member-add-email')));
       await tester.pumpAndSettle();
       expect(find.widgetWithText(AlertDialog, 'E-Mail hinzufügen'), findsOneWidget);
+      // A wrong address would let a stranger in as Ben, so it says so. Once is enough:
+      // the code goes to the address, and a typo ends there.
+      expect(find.byKey(const Key('email-warning')), findsOneWidget);
+      expect(find.textContaining('Bitte sei dir sicher, dass die Adresse stimmt'), findsOneWidget);
+      expect(find.byType(TextField), findsOneWidget);
       await tester.enterText(find.byKey(const Key('new-email')), ' lina@example.de ');
       await tester.tap(find.text('Code senden'));
       await tester.pumpAndSettle();

@@ -8,7 +8,7 @@ import (
 func (e *testEnv) rejoin(fid, admin, email, token string) {
 	e.t.Helper()
 	e.expect(201, "POST", "/api/families/"+fid+"/invitations", admin, obj{"email": email, "role": "user"})
-	e.expect(200, "GET", "/api/me", token, nil) // accepts the invitation
+	e.acceptInvitations(token)
 }
 
 func TestLeavingKeepsDataForALaterReturn(t *testing.T) {
@@ -109,7 +109,7 @@ func TestFormerMembersStayListedForAdmins(t *testing.T) {
 	if got := former(); len(got) != 0 {
 		t.Errorf("while invited: %v", got)
 	}
-	e.expect(200, "GET", "/api/me", member, nil)
+	e.acceptInvitations(member)
 	if got := former(); len(got) != 0 {
 		t.Errorf("after joining: %v", got)
 	}

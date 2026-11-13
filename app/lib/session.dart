@@ -134,6 +134,23 @@ class Family {
   final String familyColor;
 }
 
+/// A family that asked the user to join. Nobody joins without saying so.
+class Invitation {
+  Invitation(this.id, this.familyId, this.familyName, this.familyType);
+
+  factory Invitation.fromJson(Map<String, dynamic> json) => Invitation(
+    json['id'] as String,
+    json['family_id'] as String,
+    json['family_name'] as String,
+    FamilyType.values.asNameMap()[json['family_type']] ?? FamilyType.family,
+  );
+
+  final String id;
+  final String familyId;
+  final String familyName;
+  final FamilyType familyType;
+}
+
 enum SessionStatus { loading, signedOut, signedIn, unreachable }
 
 class AppSession extends ChangeNotifier {
@@ -178,6 +195,9 @@ class AppSession extends ChangeNotifier {
   /// Whether reminders reach the user.
   bool notifications = true;
   List<Family> families = [];
+
+  /// Waiting for an answer, see [answerInvitation].
+  List<Invitation> invitations = [];
   Family? current;
 
   /// The name in the selected family, as everyone there sees it.
@@ -228,6 +248,10 @@ class AppSession extends ChangeNotifier {
     families = (me['families'] as List)
         .map((f) => Family.fromJson(f as Map<String, dynamic>))
         .toList();
+    // Older servers took invitations in by themselves and send none.
+    invitations = [
+      for (final row in me['invitations'] as List? ?? const []) Invitation.fromJson(row as Map<String, dynamic>),
+    ];
     final lastId = me['last_family_id'] as String?;
     current = families.where((f) => f.id == lastId).firstOrNull;
     status = SessionStatus.signedIn;
@@ -243,6 +267,12 @@ class AppSession extends ChangeNotifier {
     }
     current = family;
     notifyListeners();
+  }
+
+  /// Joins the family of [invitation], which then opens, or declines it.
+  Future<void> answerInvitation(Invitation invitation, {required bool accept}) async {
+    await api.post('/api/invitations/${invitation.id}/${accept ? 'accept' : 'decline'}');
+    await refresh();
   }
 
   Future<void> createFamily(String name, FamilyType type) async {

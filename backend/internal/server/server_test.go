@@ -226,7 +226,6 @@ func (e *testEnv) expect(want int, method, path, token string, body any) obj {
 }
 
 var codePattern = regexp.MustCompile(`\n    (\d{6})\n`)
-var linkPattern = regexp.MustCompile(`token=([0-9a-f]+)`)
 
 // startLogin requests a login and returns the request id and the mailed code.
 func (e *testEnv) startLogin(email string) (string, string) {
@@ -246,6 +245,14 @@ func (e *testEnv) register(email, name, family string) string {
 		"request_id": id, "name": name, "family_name": family,
 	})
 	return out["token"].(string)
+}
+
+// acceptInvitations says yes to every open invitation of the user, as the app does when asked.
+func (e *testEnv) acceptInvitations(token string) {
+	e.t.Helper()
+	for _, invitation := range e.expect(200, "GET", "/api/me", token, nil)["invitations"].([]any) {
+		e.expect(200, "POST", "/api/invitations/"+invitation.(obj)["id"].(string)+"/accept", token, nil)
+	}
 }
 
 func (e *testEnv) firstFamily(token string) string {
@@ -285,32 +292,21 @@ func TestKnownUserLogsInWithCode(t *testing.T) {
 	e.expect(410, "POST", "/api/auth/verify", "", obj{"request_id": id, "code": code})
 }
 
-func TestLinkFlowNeedsExplicitConfirmation(t *testing.T) {
+func TestLoginMailHoldsTheCodeAndNoLink(t *testing.T) {
 	e := newEnv(t)
-	e.register("a@example.de", "A", "F")
-	id, _ := e.startLogin("a@example.de")
-	token := linkPattern.FindStringSubmatch(e.mailer.last)[1]
-
-	// Opening the link, as a mail scanner would, must not log anybody in.
-	res, err := http.Get(e.srv.URL + "/login?token=" + token)
-	if err != nil {
-		t.Fatal(err)
+	e.startLogin("a@example.de")
+	// The code is typed into the app; a link with a token would log in whoever opens it.
+	if strings.Contains(e.mailer.last, "token=") || !strings.Contains(e.mailer.last, "Kintura im Browser: http://test\n") {
+		t.Errorf("login mail: %s", e.mailer.last)
 	}
-	res.Body.Close()
-	if out := e.expect(200, "POST", "/api/auth/poll", "", obj{"request_id": id}); out["status"] != "pending" {
-		t.Fatalf("GET confirmed the login: %v", out)
-	}
-
-	res, err = http.PostForm(e.srv.URL+"/login", url.Values{"token": {token}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("confirm status %d", res.StatusCode)
-	}
-	if out := e.expect(200, "POST", "/api/auth/poll", "", obj{"request_id": id}); out["status"] != "authenticated" {
-		t.Fatalf("got %v", out)
+	for _, path := range []string{"/login?token=x", "/api/auth/poll"} {
+		method := "GET"
+		if strings.HasPrefix(path, "/api") {
+			method = "POST"
+		}
+		if status, _ := e.call(method, path, "", obj{"request_id": "x"}); status != 404 && status != 405 {
+			t.Errorf("%s %s still answers: %d", method, path, status)
+		}
 	}
 }
 

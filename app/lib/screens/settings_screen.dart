@@ -332,7 +332,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             OutlinedButton.icon(
                               onPressed: _addManaged,
                               icon: const Icon(Icons.person_outline),
-                              label: const Text('Benutzer hinzufügen'),
+                              label: const Text('Benutzer ohne E-Mail hinzufügen'),
                             ),
                           ],
                         ),
@@ -604,6 +604,8 @@ class _MemberScreenState extends State<_MemberScreen> {
         requestPath: '${session.familyPath}/members/${widget.member['id']}/email',
         hint: 'An diese Adresse geht ein Code. Mit ihm wird sie $name zugeordnet. Hat sie schon ein Konto in einem anderen Kreis, '
             'übernimmt dieses Konto das Mitglied mit allem, was bisher dazu gehört.',
+        warning: 'Bitte sei dir sicher, dass die Adresse stimmt: Wer dieses Postfach liest, meldet sich künftig als $name an '
+            'und sieht alles, was $name hier sieht.',
       ),
     );
     if (added != true || !mounted) return;
@@ -727,7 +729,7 @@ class _ManagedScreenState extends State<_ManagedScreen> {
   Widget build(BuildContext context) {
     final session = SessionScope.of(context);
     return _PersonPage(
-      title: 'Benutzer hinzufügen',
+      title: 'Benutzer ohne E-Mail hinzufügen',
       saveLabel: 'Hinzufügen',
       onSave: () async {
         final name = _name.text.trim();

@@ -39,7 +39,7 @@ RUN --mount=type=secret,id=android_keystore,target=/src/app/android/app/release.
     test -n "$APP_URL" \
     && flutter build apk --release --build-name=$VERSION --build-number=$BUILD_NUMBER --dart-define=APP_URL=$APP_URL
 
-FROM golang:1.27.3-alpine AS backend
+FROM golang:1.27.4-alpine AS backend
 ARG VERSION
 ARG BUILD_NUMBER
 WORKDIR /src/backend

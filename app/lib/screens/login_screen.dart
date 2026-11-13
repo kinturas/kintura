@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../beta_notice.dart';
 import '../common.dart';
 import '../session.dart';
 import 'about_screen.dart';
@@ -96,12 +97,9 @@ class _AlternativeLoginDialogState extends State<_AlternativeLoginDialog> {
   }
 }
 
-/// Email first, then code or link, then registration if the address is new.
+/// Email first, then the code from the mail, then registration if the address is new.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
-
-  /// How often the app checks whether the mail link was confirmed.
-  static Duration pollInterval = const Duration(seconds: 3);
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -121,11 +119,9 @@ class _LoginScreenState extends State<LoginScreen> {
   FamilyType _familyType = FamilyType.family;
   bool _busy = false;
   String? _error;
-  Timer? _pollTimer;
 
   @override
   void dispose() {
-    _pollTimer?.cancel();
     _email.dispose();
     _code.dispose();
     _name.dispose();
@@ -156,8 +152,6 @@ class _LoginScreenState extends State<LoginScreen> {
     _requestId = result['request_id'] as String;
     _code.clear();
     setState(() => _step = _Step.code);
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(LoginScreen.pollInterval, (_) => _poll());
   });
 
   Future<void> _verifyCode() => _run(() async {
@@ -168,26 +162,7 @@ class _LoginScreenState extends State<LoginScreen> {
     await _handleVerified(result as Map<String, dynamic>);
   });
 
-  Future<void> _poll() async {
-    if (_busy) return;
-    try {
-      final result = await SessionScope.of(context).api.post(
-        '/api/auth/poll',
-        {'request_id': _requestId},
-      );
-      if (mounted && result['status'] != 'pending') {
-        await _handleVerified(result as Map<String, dynamic>);
-      }
-    } on ApiException catch (e) {
-      if (e.status == 410) {
-        _backToEmail(e.message);
-      }
-      // Short network problems are ignored; the next poll tries again.
-    }
-  }
-
   Future<void> _handleVerified(Map<String, dynamic> result) async {
-    _pollTimer?.cancel();
     if (result['status'] == 'authenticated') {
       await SessionScope.of(context).signIn(result['token'] as String);
       return;
@@ -201,10 +176,12 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _register() => _run(() async {
     final session = SessionScope.of(context);
+    // Whoever was invited joins that family and makes none.
+    final invited = _invitedFamilies.isNotEmpty;
     final result = await session.api.post('/api/auth/register', {
       'request_id': _requestId,
       'name': _name.text.trim(),
-      'family_name': _family.text.trim(),
+      'family_name': invited ? '' : _family.text.trim(),
       'family_type': _familyType.name,
     });
     await session.signIn(result['token'] as String);
@@ -232,7 +209,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _backToEmail([String? message]) {
-    _pollTimer?.cancel();
     if (!mounted) return;
     setState(() {
       _step = _Step.email;
@@ -251,6 +227,13 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
+      // The version sits in the corner, out of the way of the form.
+      bottomNavigationBar: const SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Align(alignment: Alignment.bottomRight, heightFactor: 1, child: AppVersionText()),
+        ),
+      ),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -273,7 +256,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       textAlign: TextAlign.center,
                       style: theme.textTheme.headlineMedium,
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 16),
+                    const BetaNotice(),
+                    const SizedBox(height: 24),
                     ...switch (_step) {
                       _Step.email => _emailStep(),
                       _Step.code => _codeStep(theme),
@@ -343,8 +328,7 @@ class _LoginScreenState extends State<LoginScreen> {
   List<Widget> _codeStep(ThemeData theme) => [
     Text(
       'Wir haben eine E-Mail an ${_email.text.trim()} geschickt. '
-      'Gib den Code ein oder bestätige den Link aus der Mail, '
-      'auch auf einem anderen Gerät.',
+      'Gib den Code aus der Mail ein.',
       textAlign: TextAlign.center,
       style: theme.textTheme.bodyLarge,
     ),
@@ -375,15 +359,18 @@ class _LoginScreenState extends State<LoginScreen> {
   ];
 
   List<Widget> _registerStep(ThemeData theme) {
-    // Invited users may skip creating a family of their own.
+    // Invited users join the family that asked first and need no family of their own;
+    // the others wait in the app, see InvitationCards.
     final invited = _invitedFamilies.isNotEmpty;
+    final others = _invitedFamilies.skip(1).toList();
     return [
       Text('Registrieren', style: theme.textTheme.titleLarge),
       const SizedBox(height: 16),
       if (invited) ...[
         Text(
-          'Du wurdest eingeladen in: ${_invitedFamilies.join(', ')}. '
-          'Einen eigenen Kreis kannst du optional zusätzlich anlegen.',
+          key: const Key('invited-into'),
+          'Du wurdest eingeladen und trittst ${_invitedFamilies.first} bei. Dafür fehlt nur noch dein Name.'
+          '${others.isEmpty ? '' : ' Die Einladungen von ${others.join(', ')} kannst du danach in der App annehmen.'}',
         ),
         const SizedBox(height: 16),
       ],
@@ -403,22 +390,22 @@ class _LoginScreenState extends State<LoginScreen> {
         decoration: const InputDecoration(labelText: 'Dein Name'),
         validator: _notEmpty,
       ),
-      const SizedBox(height: 16),
-      FamilyTypeField(
-        key: const Key('family-type'),
-        value: _familyType,
-        onChanged: (type) => setState(() => _familyType = type),
-      ),
-      const SizedBox(height: 16),
-      TextFormField(
-        key: const Key('family'),
-        controller: _family,
-        textCapitalization: TextCapitalization.words,
-        decoration: InputDecoration(
-          labelText: invited ? '${_familyType.nameLabel} (optional)' : _familyType.nameLabel,
+      if (!invited) ...[
+        const SizedBox(height: 16),
+        FamilyTypeField(
+          key: const Key('family-type'),
+          value: _familyType,
+          onChanged: (type) => setState(() => _familyType = type),
         ),
-        validator: invited ? null : _notEmpty,
-      ),
+        const SizedBox(height: 16),
+        TextFormField(
+          key: const Key('family'),
+          controller: _family,
+          textCapitalization: TextCapitalization.words,
+          decoration: InputDecoration(labelText: _familyType.nameLabel),
+          validator: _notEmpty,
+        ),
+      ],
       const SizedBox(height: 24),
       FilledButton(
         onPressed: _busy ? null : _register,

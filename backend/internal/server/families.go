@@ -59,8 +59,14 @@ func (s *Server) getMe(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 		Scan(&email, &name, &lastFamily, &birthday, &notifications, &managed); err != nil {
 		return err
 	}
-	// Sessions live for weeks, so invitations are also picked up here.
-	if err := acceptInvitations(ctx, s.db, c.userID, email); err != nil {
+	// Nobody joins a family without saying so: invitations wait here until they
+	// are accepted or declined, see acceptInvitation.
+	invitations, err := queryRows(ctx, s.db,
+		`SELECT i.id, i.family_id, f.name AS family_name, f.type AS family_type FROM invitations i
+		 JOIN families f ON f.id = i.family_id
+		 WHERE i.email = ? AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.family_id = i.family_id AND m.user_id = ?)
+		 ORDER BY f.name`, email, c.userID)
+	if err != nil {
 		return err
 	}
 	// The internal address means nothing to anyone.
@@ -85,7 +91,7 @@ func (s *Server) getMe(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": c.userID, "email": email, "name": name, "birthday": birthday, "notifications": notifications, "managed": managed,
-		"families": families, "last_family_id": current,
+		"families": families, "last_family_id": current, "invitations": invitations,
 	})
 	return nil
 }
@@ -554,16 +560,17 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request, c reqC
 		return err
 	}
 	id := newID()
+	body, err := s.invitationMailBody(ctx, c, email, code)
+	if err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO invitations (id, family_id, email, role, is_admin, created_at, color, can_change_color, code_hash, code_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO invitations (id, family_id, email, role, is_admin, created_at, color, can_change_color, code_hash, code_expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, c.familyID, email, in.Role, in.IsAdmin, now(), in.Color, canChangeColor, hashCode(id, code), invitationCodeExpiry()); err != nil {
 		if isUniqueViolation(err) {
 			return fail(http.StatusConflict, "Diese Person wurde bereits eingeladen.")
 		}
-		return err
-	}
-	body, err := s.invitationMailBody(ctx, c, code)
-	if err != nil {
 		return err
 	}
 	mailSent := true

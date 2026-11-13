@@ -67,6 +67,11 @@ class DashboardScreen extends StatelessWidget {
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
+            if (session.invitations.isNotEmpty)
+              const SliverPadding(
+                padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+                sliver: SliverToBoxAdapter(child: InvitationCards()),
+              ),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               sliver: SliverToBoxAdapter(
@@ -92,6 +97,86 @@ class DashboardScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The open invitations, each to join or to decline. Nobody joins a family by being invited alone.
+class InvitationCards extends StatelessWidget {
+  const InvitationCards({super.key});
+
+  Future<void> _answer(BuildContext context, Invitation invitation, {required bool accept}) async {
+    final session = SessionScope.of(context);
+    if (!accept &&
+        !await confirm(
+          context,
+          'Die Einladung von ${invitation.familyName} ablehnen? Du kannst später erneut eingeladen werden.',
+          action: 'Ablehnen',
+        )) {
+      return;
+    }
+    if (!context.mounted) return;
+    await guarded(context, () => session.answerInvitation(invitation, accept: accept));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = SessionScope.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final invitation in session.invitations)
+          Card(
+            key: Key('invitation-${invitation.id}'),
+            elevation: 0,
+            color: scheme.secondaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.mail_outline, color: scheme.onSecondaryContainer),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Einladung: ${invitation.familyName}',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(color: scheme.onSecondaryContainer),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 36),
+                    child: Text(
+                      '${invitation.familyType.label} lädt dich ein. Erst wenn du beitrittst, sehen die anderen dich dort.',
+                      style: TextStyle(color: scheme.onSecondaryContainer),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Wrap(
+                      spacing: 8,
+                      children: [
+                        TextButton(
+                          onPressed: () => _answer(context, invitation, accept: false),
+                          child: const Text('Ablehnen'),
+                        ),
+                        FilledButton(
+                          onPressed: () => _answer(context, invitation, accept: true),
+                          child: const Text('Beitreten'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -243,6 +328,11 @@ class _NoFamilyScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (session.invitations.isNotEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 24),
+                child: InvitationCards(),
+              ),
             const Text('Du gehörst noch zu keinem Kreis.'),
             const SizedBox(height: 16),
             FilledButton(

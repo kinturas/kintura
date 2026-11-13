@@ -38,16 +38,32 @@ func (s *Server) noteInvitationMail(ctx context.Context, familyID, email string)
 	return err
 }
 
-func (s *Server) invitationMailBody(ctx context.Context, c reqCtx, code string) (string, error) {
+// appLinks ends the mails with where Kintura is found. It is the app's address
+// alone, never with a code or token in it; the downloads of the apps follow later.
+func (s *Server) appLinks() string {
+	return fmt.Sprintf("Kintura im Browser: %s\n", s.publicURL)
+}
+
+// invitationMailBody writes the mail of an invitation. Someone new registers with the
+// usual code and joins without making a family; someone known accepts in the app.
+func (s *Server) invitationMailBody(ctx context.Context, c reqCtx, email, code string) (string, error) {
 	var familyName string
 	if err := s.db.QueryRowContext(ctx, `SELECT name FROM families WHERE id = ?`, c.familyID).Scan(&familyName); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Hallo,\n\ndu wurdest bei Kintura %s \"%s\" eingeladen.\n\n"+
-		"Öffne die App und melde dich mit dieser E-Mail-Adresse an, um beizutreten.\n\n"+
+	var accounts int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE email = ?`, email).Scan(&accounts); err != nil {
+		return "", err
+	}
+	join := "Öffne Kintura und melde dich mit dieser E-Mail-Adresse an. Dort kannst du die Einladung annehmen.\n\n"
+	if accounts == 0 {
+		join = "Öffne Kintura und melde dich mit dieser E-Mail-Adresse an. Du bekommst einen Code per Mail, " +
+			"danach fehlt nur noch dein Name. Einen eigenen Kreis brauchst du nicht anzulegen.\n\n"
+	}
+	return fmt.Sprintf("Hallo,\n\ndu wurdest bei Kintura %s \"%s\" eingeladen.\n\n%s"+
 		"Alternativ kannst du diesen Code an die Person weitergeben, die dich eingeladen hat:\n\n    %s\n\n"+
 		"Wer ihn eingibt, nimmt dich dort auf. Gib ihn also nur weiter, wenn du das möchtest. Er ist 7 Tage gültig.\n"+
-		"Falls du nichts davon weißt, ignoriere diese Mail einfach.\n", familyTypes[c.familyType].into, familyName, code), nil
+		"Falls du nichts davon weißt, ignoriere diese Mail einfach.\n\n%s", familyTypes[c.familyType].into, familyName, join, code, s.appLinks()), nil
 }
 
 func invitationCodeExpiry() string {
@@ -56,6 +72,58 @@ func invitationCodeExpiry() string {
 
 // resendInvitation sends a mail with a new code. The old code only ends once the new
 // one is on its way, so a failed mail takes nothing away.
+// ownInvitation finds an invitation to the caller's own address, which is the
+// only kind they may accept or decline.
+func (s *Server) ownInvitation(r *http.Request, c reqCtx) (email, familyID string, err error) {
+	ctx := r.Context()
+	if err := s.db.QueryRowContext(ctx, `SELECT email FROM users WHERE id = ?`, c.userID).Scan(&email); err != nil {
+		return "", "", err
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT family_id FROM invitations WHERE id = ? AND email = ?`, r.PathValue("id"), email).Scan(&familyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", errNotFound
+	}
+	return email, familyID, err
+}
+
+// acceptInvitation makes the caller a member of the family that invited them,
+// and opens it next.
+func (s *Server) acceptInvitation(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	email, familyID, err := s.ownInvitation(r, c)
+	if err != nil {
+		return err
+	}
+	ctx := r.Context()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := acceptInvitationsOf(ctx, tx, c.userID, email, familyID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET last_family_id = ? WHERE id = ?`, familyID, c.userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"family_id": familyID})
+	return nil
+}
+
+// declineInvitation drops an invitation; the family can invite again.
+func (s *Server) declineInvitation(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	email, familyID, err := s.ownInvitation(r, c)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(r.Context(), `DELETE FROM invitations WHERE family_id = ? AND email = ?`, familyID, email); err != nil {
+		return err
+	}
+	return noContent(w)
+}
+
 func (s *Server) resendInvitation(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
 	var email string
@@ -73,7 +141,7 @@ func (s *Server) resendInvitation(w http.ResponseWriter, r *http.Request, c reqC
 	if err != nil {
 		return err
 	}
-	body, err := s.invitationMailBody(ctx, c, code)
+	body, err := s.invitationMailBody(ctx, c, email, code)
 	if err != nil {
 		return err
 	}
@@ -176,7 +244,7 @@ func (s *Server) confirmInvitation(w http.ResponseWriter, r *http.Request, c req
 	}
 	// Whoever was taken in should hear about it, in case they did not pass the code on.
 	notice := fmt.Sprintf("Hallo,\n\ndu wurdest bei Kintura %s \"%s\" aufgenommen. Melde dich mit dieser E-Mail-Adresse an, um dabei zu sein.\n\n"+
-		"Falls du das nicht möchtest, kannst du den Kreis in der App wieder verlassen.\n", familyTypes[c.familyType].into, familyName)
+		"Falls du das nicht möchtest, kannst du den Kreis in der App wieder verlassen.\n\n%s", familyTypes[c.familyType].into, familyName, s.appLinks())
 	if err := s.mailer.Send(email, "Du bist jetzt bei Kintura dabei", notice); err != nil {
 		s.logError(r, http.StatusBadGateway, fmt.Sprintf("Hinweis zur Aufnahme an %s: %v", email, err))
 	}

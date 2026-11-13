@@ -197,7 +197,7 @@ func TestEventCopies(t *testing.T) {
 	otherFamily := e.firstFamily(other)
 	e.expect(404, "POST", copyPath, ben, obj{"family_id": otherFamily})
 	e.expect(201, "POST", "/api/families/"+otherFamily+"/invitations", other, obj{"email": "b@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", ben, nil) // accepts the invitation
+	e.acceptInvitations(ben)
 	moved := e.expect(201, "POST", copyPath, ben, obj{"family_id": otherFamily})["ids"].([]any)[0].(string)
 	if got := e.expect(200, "GET", "/api/families/"+otherFamily+"/events/"+moved, ben, nil); got["category_id"] != nil ||
 		got["visibility"] != "participants" || len(got["participant_ids"].([]any)) != 1 {
@@ -587,7 +587,7 @@ func TestCustomColorsInCalendars(t *testing.T) {
 	foreign := e.register("o@example.de", "O", "Anders")
 	foreignID := e.firstFamily(foreign)
 	e.expect(201, "POST", "/api/families/"+foreignID+"/invitations", foreign, obj{"email": "b@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", ben, nil) // accepts the invitation
+	e.acceptInvitations(ben)
 	key := "family:" + foreignID
 	color := func(token, name string) any {
 		return calendarNamed(t, e.expect(200, "GET", base+"/calendars", token, nil), name)["color"]
@@ -639,7 +639,7 @@ func TestPersonalCalendarsKeepTheirOwnColor(t *testing.T) {
 	foreign := e.register("o@example.de", "O", "Anders")
 	foreignID := e.firstFamily(foreign)
 	e.expect(201, "POST", "/api/families/"+foreignID+"/invitations", foreign, obj{"email": "b@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", ben, nil) // accepts the invitation
+	e.acceptInvitations(ben)
 	key := "family:" + foreignID
 
 	got := calendarNamed(t, e.expect(200, "GET", base+"/calendars", ben, nil), key)
@@ -790,7 +790,7 @@ func TestOtherFamiliesInCalendar(t *testing.T) {
 	e.expect(404, "PUT", "/api/families/"+own+"/calendars/family:"+foreign, anna, obj{"enabled": true, "color": "#D32F2F"})
 
 	e.expect(201, "POST", path+"/invitations", ben, obj{"email": "a@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", anna, nil) // accepts the invitation
+	e.acceptInvitations(anna)
 
 	// The other family's calendar starts switched off.
 	if got := titlesOf(e.entries(anna, own, from, to)); got != "" {
@@ -1174,7 +1174,7 @@ func TestEntryColors(t *testing.T) {
 	other := e.register("d@example.de", "D", "G")
 	otherBase := "/api/families/" + e.firstFamily(other)
 	e.expect(201, "POST", otherBase+"/invitations", other, obj{"email": "a@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", token, nil) // accepts the invitation
+	e.acceptInvitations(token)
 	e.expect(204, "PUT", base+"/calendars/family:"+e.firstFamily(other), token, obj{"enabled": true, "color": calendarColors["other_family"]})
 	const otherColor = "#D32F2F"
 	e.expect(204, "PUT", otherBase+"/color", other, obj{"color": otherColor})
@@ -1415,7 +1415,7 @@ func TestSharingHolidaysAndSpecialDays(t *testing.T) {
 	foreign := e.register("o@example.de", "O", "Anders")
 	foreignID := e.firstFamily(foreign)
 	e.expect(201, "POST", "/api/families/"+foreignID+"/invitations", foreign, obj{"email": "a@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", token, nil) // accepts the invitation
+	e.acceptInvitations(token)
 	e.expect(400, "POST", base+"/calendars/family:"+foreignID+"/share", token, nil)
 
 	// Public holidays, of the chosen country.
@@ -1607,7 +1607,7 @@ func TestRestrictedMembersOnlySwitchCalendarsAndChooseStates(t *testing.T) {
 	foreign := e.register("o@example.de", "O", "Anders")
 	foreignID := e.firstFamily(foreign)
 	e.expect(201, "POST", "/api/families/"+foreignID+"/invitations", foreign, obj{"email": "k@example.de", "role": "user"})
-	e.expect(200, "GET", "/api/me", kid, nil) // accepts the invitation
+	e.acceptInvitations(kid)
 	e.setRole(fid, admin, kidID, "restrict_user", false)
 
 	// Switching and the states work.

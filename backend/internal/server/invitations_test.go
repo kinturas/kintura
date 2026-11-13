@@ -21,11 +21,22 @@ func TestInvitationMailExplainsItsCode(t *testing.T) {
 	e := newEnv(t)
 	admin := e.register("a@example.de", "A", "F")
 	base := "/api/families/" + e.firstFamily(admin)
+	// Without an account: the usual login, then the name, and no family of one's own.
 	invited(e, base, admin, "n@example.de", nil)
-	for _, want := range []string{`"F"`, "melde dich", "Wer ihn eingibt", "7 Tage"} {
+	for _, want := range []string{`"F"`, "melde dich", "nur noch dein Name", "Einen eigenen Kreis brauchst du nicht", "Wer ihn eingibt", "7 Tage", "Kintura im Browser: http://test\n"} {
 		if !strings.Contains(e.mailer.last, want) {
 			t.Errorf("%q missing: %s", want, e.mailer.last)
 		}
+	}
+	// With one: the invitation waits in the app.
+	e.register("k@example.de", "K", "K")
+	invited(e, base, admin, "k@example.de", nil)
+	if !strings.Contains(e.mailer.last, "Einladung annehmen") || strings.Contains(e.mailer.last, "dein Name") {
+		t.Errorf("mail to an account: %s", e.mailer.last)
+	}
+	// Never a link with something secret in it.
+	if strings.Contains(e.mailer.last, "token=") || strings.Contains(e.mailer.last, "?") {
+		t.Errorf("link in the mail: %s", e.mailer.last)
 	}
 	// What comes back never includes the code.
 	people := e.expect(200, "GET", base+"/members", admin, nil)["invitations"].([]any)
@@ -117,7 +128,11 @@ func TestConfirmingInvitationJoinsOnlyThisFamily(t *testing.T) {
 	if got := e.expect(200, "GET", otherBase+"/members", other, nil)["invitations"].([]any); len(got) != 1 {
 		t.Errorf("the other invitation is still open: %v", got)
 	}
-	// The next login of the person herself answers that one.
+	// The person herself answers that one, it does not join by itself.
+	if got := e.expect(200, "GET", "/api/me", person, nil)["invitations"].([]any); len(got) != 1 || got[0].(obj)["family_name"] != "Anderer" {
+		t.Errorf("open for her: %v", got)
+	}
+	e.acceptInvitations(person)
 	for _, family := range e.expect(200, "GET", "/api/me", person, nil)["families"].([]any) {
 		names = append(names, family.(obj)["name"].(string))
 	}
@@ -224,4 +239,40 @@ func TestInvitationFromBeforeCodesAsksToSendAgain(t *testing.T) {
 	e.expect(204, "POST", base+"/invitations/"+id+"/resend", admin, nil)
 	code := codePattern.FindStringSubmatch(e.mailer.last)[1]
 	e.expect(200, "POST", base+"/invitations/"+id+"/confirm", admin, obj{"code": code, "name": "Neu"})
+}
+
+func TestRegistrationJoinsTheFirstInvitationOnly(t *testing.T) {
+	e := newEnv(t)
+	first := e.register("a@example.de", "A", "Erster")
+	firstFid := e.firstFamily(first)
+	second := e.register("b@example.de", "B", "Zweiter")
+	invited(e, "/api/families/"+firstFid, first, "n@example.de", nil)
+	invited(e, "/api/families/"+e.firstFamily(second), second, "n@example.de", nil)
+	// Both come within a second; the first one is the earlier by what it says.
+	if _, err := e.server.db.Exec(`UPDATE invitations SET created_at = '2026-01-01T00:00:00Z' WHERE family_id = ?`, firstFid); err != nil {
+		t.Fatal(err)
+	}
+
+	// The usual code; the registration names the families, the earliest first.
+	id, code := e.startLogin("n@example.de")
+	out := e.expect(200, "POST", "/api/auth/verify", "", obj{"request_id": id, "code": code})
+	if !slices.Equal(out["invited_families"].([]any), []any{"Erster", "Zweiter"}) {
+		t.Fatalf("verify: %v", out)
+	}
+	// A name is all it takes.
+	token := e.expect(201, "POST", "/api/auth/register", "", obj{"request_id": id, "name": "Neu"})["token"].(string)
+	me := e.expect(200, "GET", "/api/me", token, nil)
+	families := me["families"].([]any)
+	if len(families) != 1 || families[0].(obj)["id"] != firstFid || me["last_family_id"] != firstFid {
+		t.Errorf("joined: %v", families)
+	}
+	// The other one waits, to be accepted like any invitation.
+	waiting := me["invitations"].([]any)
+	if len(waiting) != 1 || waiting[0].(obj)["family_name"] != "Zweiter" {
+		t.Fatalf("waiting: %v", waiting)
+	}
+	e.acceptInvitations(token)
+	if n := len(e.expect(200, "GET", "/api/me", token, nil)["families"].([]any)); n != 2 {
+		t.Errorf("after accepting: %d families", n)
+	}
 }

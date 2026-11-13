@@ -187,6 +187,7 @@ class EmailCodeDialog extends StatefulWidget {
     required this.label,
     required this.requestPath,
     this.hint,
+    this.warning,
   });
 
   final String title;
@@ -195,6 +196,9 @@ class EmailCodeDialog extends StatefulWidget {
 
   /// Shown above the address, for what is special about it here.
   final String? hint;
+
+  /// Stands out above the address, for when a wrong one would do harm.
+  final String? warning;
 
   @override
   State<EmailCodeDialog> createState() => _EmailCodeDialogState();
@@ -255,6 +259,8 @@ class _EmailCodeDialogState extends State<EmailCodeDialog> {
   @override
   Widget build(BuildContext context) {
     final hint = widget.hint;
+    final warning = widget.warning;
+    final scheme = Theme.of(context).colorScheme;
     return AlertDialog(
       title: Text(widget.title),
       content: SizedBox(
@@ -266,6 +272,25 @@ class _EmailCodeDialogState extends State<EmailCodeDialog> {
             children: [
               if (!_codeSent) ...[
                 if (hint != null) ...[Text(hint), const SizedBox(height: 16)],
+                if (warning != null) ...[
+                  Container(
+                    key: const Key('email-warning'),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: scheme.onErrorContainer),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(warning, style: TextStyle(color: scheme.onErrorContainer))),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 TextField(
                   key: const Key('new-email'),
                   controller: _email,
