@@ -32,7 +32,8 @@ func (s *Server) createList(w http.ResponseWriter, r *http.Request, c reqCtx) er
 	if err != nil {
 		return err
 	}
-	if in.Kind != "shopping" && in.Kind != "tasks" {
+	// Einkaufslisten haben ihren eigenen Bereich, siehe shopping.go.
+	if in.Kind != "tasks" {
 		return fail(http.StatusBadRequest, "Ungültiger Listentyp")
 	}
 	id := newID()

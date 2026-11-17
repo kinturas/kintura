@@ -448,6 +448,9 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 		return nil, err
 	}
 	files = append(files, orphans...)
+	if err := deleteMemberShopping(ctx, tx, familyID, userID); err != nil {
+		return nil, err
+	}
 	for _, query := range []string{
 		`DELETE FROM events WHERE id IN (SELECT e.id ` + abandoned + ` AND e.created_by IS NULL)`,
 		`INSERT INTO event_participants (event_id, user_id) SELECT e.id, e.created_by ` + abandoned + ` ON CONFLICT DO NOTHING`,

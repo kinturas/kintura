@@ -11,6 +11,7 @@ import 'members_screen.dart';
 import 'messages_screen.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
+import 'shopping_screen.dart';
 import 'special_days_screen.dart';
 
 class _Area {
@@ -30,7 +31,8 @@ class _Area {
 /// The areas in their order. The administration is the admins' alone and comes last.
 List<_Area> _areasFor(FamilyType type, {required bool isAdmin}) => [
   const _Area('Kalender', 'Termine', Icons.calendar_month, Color(0xFF3567B5), CalendarScreen()),
-  const _Area('Listen', 'Einkauf & Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
+  const _Area('Einkaufen', 'Einkaufslisten', Icons.shopping_cart_outlined, Color(0xFF5E8C2B), ShoppingScreen()),
+  const _Area('Listen', 'Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
   const _Area('Dokumente', 'Wichtige Unterlagen', Icons.folder_outlined, Color(0xFF8A6D1F), DocumentsScreen(), comingSoon: true),
   const _Area('Mahlzeiten', 'Essensplaner', Icons.restaurant_menu, Color(0xFFC2571A), MealsScreen(), comingSoon: true),
   _Area('Nachrichten', type.chat, Icons.chat_bubble_outline, const Color(0xFF7B4FB0), const MessagesScreen(), comingSoon: true),

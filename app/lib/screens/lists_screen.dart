@@ -48,7 +48,7 @@ class _ListsScreenState extends State<ListsScreen> {
           if (lists.isEmpty) {
             return const EmptyHint(
               icon: Icons.checklist,
-              text: 'Noch keine Listen. Lege zum Beispiel eine Einkaufsliste an.',
+              text: 'Noch keine Listen. Lege zum Beispiel eine Liste für den Hausputz an. Einkaufslisten gibt es unter Einkaufen.',
             );
           }
           return ListView(
@@ -87,7 +87,9 @@ class _NewListDialog extends StatefulWidget {
 
 class _NewListDialogState extends State<_NewListDialog> {
   final _name = TextEditingController();
-  String _kind = 'shopping';
+
+  // Einkaufslisten haben ihren eigenen Bereich, siehe shopping_screen.dart.
+  static const _kind = 'tasks';
 
   @override
   void dispose() {
@@ -98,25 +100,11 @@ class _NewListDialogState extends State<_NewListDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Neue Liste'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _name,
-            autofocus: true,
-            decoration: const InputDecoration(labelText: 'Name'),
-          ),
-          const SizedBox(height: 16),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'shopping', label: Text('Einkauf')),
-              ButtonSegment(value: 'tasks', label: Text('Aufgaben')),
-            ],
-            selected: {_kind},
-            onSelectionChanged: (s) => setState(() => _kind = s.first),
-          ),
-        ],
+      title: const Text('Neue Aufgabenliste'),
+      content: TextField(
+        controller: _name,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: 'Name'),
       ),
       actions: [
         TextButton(

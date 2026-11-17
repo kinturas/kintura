@@ -356,7 +356,7 @@ func TestInvitationJoinsFamilyAsChild(t *testing.T) {
 	}
 
 	// Children can use content but not administer the family.
-	e.expect(201, "POST", "/api/families/"+fid+"/lists", child, obj{"name": "Einkauf", "kind": "shopping"})
+	e.expect(201, "POST", "/api/families/"+fid+"/lists", child, obj{"name": "Putzen", "kind": "tasks"})
 	e.expect(403, "PUT", "/api/families/"+fid, child, obj{"name": "X"})
 	e.expect(403, "POST", "/api/families/"+fid+"/invitations", child, obj{"email": "x@example.de", "role": "manager"})
 }

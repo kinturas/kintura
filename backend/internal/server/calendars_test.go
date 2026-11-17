@@ -697,8 +697,8 @@ func TestCalendarEntriesFromAllSources(t *testing.T) {
 	listID := e.expect(201, "POST", base+"/lists", token, obj{"name": "L", "kind": "tasks"})["id"].(string)
 	e.expect(201, "POST", base+"/lists/"+listID+"/items", token, obj{"title": "Aufgabe", "due_date": "2026-03-11"})
 	e.expect(201, "POST", base+"/lists/"+listID+"/items", token, obj{"title": "Ohne Datum"})
-	shopping := e.expect(201, "POST", base+"/lists", token, obj{"name": "S", "kind": "shopping"})["id"].(string)
-	e.expect(201, "POST", base+"/lists/"+shopping+"/items", token, obj{"title": "Milch", "due_date": "2026-03-11"})
+	// Einkaufslisten gibt es nur noch unter Einkaufen.
+	e.expect(400, "POST", base+"/lists", token, obj{"name": "S", "kind": "shopping"})
 	e.expect(201, "POST", base+"/special-days", token, obj{"title": "Oma", "kind": "birthday", "date": "1950-03-12", "yearly": true})
 	e.expect(201, "POST", base+"/special-days", token, obj{"title": "Jahrestag", "kind": "memorial", "date": "2000-03-13", "yearly": true})
 	e.expect(204, "PUT", base+"/profile", token, obj{"name": "Anna", "birthday": "1990-03-14"})

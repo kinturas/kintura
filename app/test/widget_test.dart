@@ -487,11 +487,65 @@ class FakeBackend {
       case '/api/families/f1/events/e1/attachments/a1':
         writes['${request.method} ${request.url.path}'] = body;
         response = <String, dynamic>{};
+      case '/api/families/f1/shopping/lists' when request.method == 'GET':
+        response = shoppingLists;
+      case '/api/families/f1/shopping/lists/s1/items' when request.method == 'GET':
+        response = shoppingItems;
+      case '/api/families/f1/shopping/articles' when request.method == 'GET':
+        response = shoppingArticles;
+      case final path when path.startsWith('/api/families/f1/shopping/'):
+        response = _shoppingWrite(request.method, path, body, request.url.queryParameters);
       default:
         return _json({'error': 'unerwartet: ${request.url.path}'}, 500);
     }
     return _json(response, 200);
   });
+
+  List<Map<String, Object?>> shoppingLists = [
+    {
+      'id': 's1',
+      'name': 'Wocheneinkauf',
+      'color': '#2E7D32',
+      'created_by': 'u1',
+      'assignees_all': true,
+      'assignee_ids': <String>[],
+      'visibility': 'all',
+      'open_items': 1,
+      'can_edit': true,
+    },
+  ];
+  List<Map<String, Object?>> shoppingItems = [
+    {'id': 'i1', 'name': 'Milch', 'amount': '2 l', 'note': '', 'urgency': 'urgent', 'done': false, 'photo_ids': <String>[]},
+    {'id': 'i2', 'name': 'Brot', 'amount': '', 'note': '', 'urgency': '', 'done': true, 'photo_ids': <String>[]},
+  ];
+  List<Map<String, Object?>> shoppingArticles = [];
+
+  /// Keeps what the shopping routes change, as the server would, and records the write.
+  Object? _shoppingWrite(String method, String path, Object? body, Map<String, String> query) {
+    final route = path.substring('/api/families/f1/shopping/'.length);
+    writes['$method $route'] = body ?? (query.isEmpty ? null : query);
+    final data = body is Map ? body : const {};
+    switch ((method, route)) {
+      case ('POST', 'lists/s1/items'):
+        final existing = shoppingItems.where((i) => i['name'] == data['name']).firstOrNull;
+        if (existing != null) {
+          existing['done'] = false;
+          return {'id': existing['id']};
+        }
+        final id = 'i${shoppingItems.length + 1}';
+        shoppingItems.add({'id': id, 'name': data['name'], 'amount': '', 'note': '', 'urgency': '', 'done': false, 'photo_ids': <String>[]});
+        return {'id': id};
+      case ('PUT', final r) when r.startsWith('items/'):
+        final item = shoppingItems.firstWhere((i) => i['id'] == r.substring('items/'.length));
+        item.addAll({for (final key in ['amount', 'note', 'urgency', 'done']) key: data[key]});
+        return {'id': item['id']};
+      case ('POST', 'articles'):
+        shoppingArticles.add({'name': data['name'], 'custom': true, 'icon': '', 'category': 'eigene'});
+        return {'name': data['name']};
+      default:
+        return {'id': 's9'};
+    }
+  }
 
   static http.Response _json(Object? value, int status) => http.Response.bytes(
     utf8.encode(jsonEncode(value)),
@@ -812,6 +866,7 @@ void main() {
     expect(find.text('Müller'), findsOneWidget);
     for (final area in [
       'Kalender',
+      'Einkaufen',
       'Listen',
       'Dokumente',
       'Mahlzeiten',
@@ -966,9 +1021,9 @@ void main() {
       await disposeApp(tester);
     });
 
-    testWidgets('Kalender und Einstellungen sind frei', (tester) async {
+    testWidgets('Kalender, Einkaufen und Einstellungen sind frei', (tester) async {
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
-      for (final title in ['Kalender', 'Verwaltung']) {
+      for (final title in ['Kalender', 'Einkaufen', 'Verwaltung']) {
         expect(find.descendant(of: tile(title), matching: find.text('Kommt bald')), findsNothing, reason: title);
         await tester.tap(find.text(title));
         await tester.pumpAndSettle();

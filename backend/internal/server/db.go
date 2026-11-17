@@ -8,7 +8,7 @@ import (
 
 type dbtx = database.Querier
 
-var boolColumns = map[string]bool{"done": true, "all_day": true, "yearly": true, "is_admin": true, "used": true, "is_sysadmin": true, "participants_all": true, "can_change_color": true, "managed": true}
+var boolColumns = map[string]bool{"done": true, "all_day": true, "yearly": true, "is_admin": true, "used": true, "is_sysadmin": true, "participants_all": true, "can_change_color": true, "managed": true, "assignees_all": true, "custom": true}
 
 // queryRows returns result rows keyed by column name, ready to be sent as JSON.
 func queryRows(ctx context.Context, q dbtx, query string, args ...any) ([]map[string]any, error) {

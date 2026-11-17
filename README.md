@@ -372,6 +372,34 @@ Anlegen und Bearbeiten sofort die Farbe, die der Termin mit der aktuellen Auswah
 - **Anhänge:** Sie liegen wie andere Dateien in der Dateiablage, erscheinen aber nicht unter Dokumenten und sind nur über
   ihren Termin erreichbar.
 
+## Einkaufen
+
+Die Kachel „Einkaufen“ zeigt die Einkaufslisten, die man sehen darf, und am Ende einen Knopf für eine neue. Unter „Listen“
+gibt es nur noch Aufgabenlisten; das Backend nimmt dort keine neuen Einkaufslisten mehr an.
+
+- **Liste:** Name, Farbe aus der Farbtabelle des Kreises, „Für“ (alle oder einzelne Mitglieder) und „Sichtbar für“ wie bei
+  Terminen. Wer eine Liste sieht, darf Artikel hinzufügen und abhaken; ändern und löschen dürfen nur Ersteller und Manager.
+- **Artikel:** Der Katalog mit Kategorien und Symbolen steht in der App (`app/lib/shopping/shopping_catalog.dart`), die
+  Strich-Symbole in `shopping_icons.dart` als SVG-Pfade auf 24 × 24. Das Backend kennt Artikel nur beim Namen. In
+  `shopping_articles` stehen die eigenen Artikel eines Kreises (`custom = 1`) und geänderte Symbole oder Kategorien von
+  Katalogartikeln. Ohne Symbol zeigt die App den Anfangsbuchstaben.
+- **Suche:** „Ich möchte einkaufen …“ findet den Text überall im Namen, Treffer am Anfang zuerst. Gibt es den Namen noch nicht,
+  steht er als eigener Artikel am Ende; ein Tipp legt ihn unter „Eigene Artikel“ an, mit großem Anfangsbuchstaben. Umbenennen
+  gibt es nicht, eigene Artikel lassen sich löschen.
+- **Kacheln:** grau, wenn der Artikel auf der Liste steht, hellgrün zum Hinzufügen; auf jeder Liste gleich. Die Farbe der
+  Liste zeigt nur der Streifen unter der Titelleiste.
+- **Abhaken:** Ein Tipp auf einen Artikel der Liste hakt ihn ab. Er bleibt mit Menge, Beschreibung und Fotos als „Zuletzt
+  verwendet“ an der Liste und kommt mit einem Tipp zurück.
+- **Langes Drücken:** öffnet die Seite des Artikels mit einem Feld für Menge und Beschreibung (gespeichert in `amount`,
+  `note` bleibt leer), Dringlichkeit (dringend, Angebot, wenn’s passt), Kategorie, Fotos und der Liste, auf der er steht.
+  Das Symbol lässt sich nur bei eigenen Artikeln ändern, auf einer eigenen Seite mit Suche über die Namen aller Artikel, die
+  das Symbol verwenden. Wer mit ungespeicherten Änderungen zurückgeht, wird gefragt. Beim Verschieben in eine Liste, die den
+  Artikel schon hat, übernimmt diese die Angaben.
+- **Fotos:** höchstens 6 pro Artikel, die App verkleinert sie auf 1280 Pixel. Sie liegen in der Datenbank
+  (`shopping_item_photos`), nicht in der Dateiablage.
+- **Aktualisieren:** Die offene Liste lädt alle 30 Sekunden neu und mit Herunterziehen. Eine sofortige Übertragung per
+  Server-Push gibt es noch nicht.
+
 ## Mandantentrennung
 
 Alle Fachdaten hängen an `/api/families/{fid}/...`. Die Middleware `member` in `backend/internal/server/server.go` prüft die
