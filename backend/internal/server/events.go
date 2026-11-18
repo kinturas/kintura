@@ -661,6 +661,17 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	if err := saveEventLists(ctx, tx, id, in); err != nil {
 		return err
 	}
+	people, err := eventPeople(ctx, tx, c.familyID, id, in.everyone)
+	if err != nil {
+		return err
+	}
+	kind := activityEventAdded
+	if in.everyone {
+		kind = activityEventAll
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, kind, id, in.Title, people); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -682,6 +693,20 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 		return err
 	}
 	defer tx.Rollback()
+	before, err := queryRows(ctx, tx,
+		`SELECT title, description, start_at, end_at, all_day, recurrence, location, participants_all
+		 FROM events WHERE id = ? AND family_id = ?`, id, c.familyID)
+	if err != nil {
+		return err
+	}
+	if len(before) == 0 {
+		return errNotFound
+	}
+	old := before[0]
+	oldPeople, err := eventPeople(ctx, tx, c.familyID, id, old["participants_all"] == true)
+	if err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE events SET title = ?, description = ?, start_at = ?, end_at = ?, all_day = ?, timezone = ?,
 			participants_all = ?, visibility = ?, category_id = ?, recurrence = ?, location = ?, location_lat = ?, location_lon = ?,
@@ -694,6 +719,24 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	}
 	if err := saveEventLists(ctx, tx, id, in); err != nil {
 		return err
+	}
+	people, err := eventPeople(ctx, tx, c.familyID, id, in.everyone)
+	if err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityEventAdded, id, in.Title, minus(people, oldPeople)); err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityEventRemoved, id, in.Title, minus(oldPeople, people)); err != nil {
+		return err
+	}
+	// Only what one would want to know: not a new reminder or category, say.
+	changed := old["title"] != in.Title || old["description"] != in.Description || old["start_at"] != in.startAt ||
+		old["end_at"] != in.endAt || old["all_day"] != in.AllDay || old["recurrence"] != in.rule || old["location"] != in.Location
+	if changed {
+		if err := addReplacingActivity(ctx, tx, c.familyID, c.userID, activityEventChanged, id, in.Title, both(people, oldPeople)); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -741,8 +784,29 @@ func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id = ? AND family_id = ?`, id, c.familyID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var title string
+	var everyone bool
+	if err := tx.QueryRowContext(ctx, `SELECT title, participants_all FROM events WHERE id = ? AND family_id = ?`, id, c.familyID).
+		Scan(&title, &everyone); err != nil {
+		return err
+	}
+	people, err := eventPeople(ctx, tx, c.familyID, id, everyone)
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id = ? AND family_id = ?`, id, c.familyID)
 	if err := requireAffected(res, err); err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityEventDeleted, id, title, people); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	for _, attachment := range attachments {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
+import 'live_updates.dart';
 
 abstract class TokenStore {
   Future<String?> read();
@@ -167,6 +168,9 @@ class AppSession extends ChangeNotifier {
   final ApiClient api;
   final TokenStore tokens;
   final ThemeStore? themes;
+
+  /// Changes others make, as they happen; see LiveConnection.
+  final live = LiveUpdates();
 
   /// Kintura starts dark; light, or following the device, is a choice in the profile.
   static const defaultThemeMode = ThemeMode.dark;

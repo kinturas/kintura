@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../beta_notice.dart';
 import '../common.dart';
 import '../session.dart';
+import 'activity_screen.dart';
 import 'calendar_screen.dart';
 import 'files_screens.dart';
 import 'lists_screen.dart';
@@ -15,7 +16,7 @@ import 'shopping_screen.dart';
 import 'special_days_screen.dart';
 
 class _Area {
-  const _Area(this.title, this.subtitle, this.icon, this.color, this.page, {this.comingSoon = false});
+  const _Area(this.title, this.subtitle, this.icon, this.color, this.page, {this.comingSoon = false, this.showsUnread = false});
 
   final String title;
   final String subtitle;
@@ -26,10 +27,21 @@ class _Area {
   /// Not released yet: the tile shows that and cannot be opened. To release an area,
   /// remove the flag from it in [_areasFor].
   final bool comingSoon;
+
+  /// Shows the number of unread entries of Aktuelles.
+  final bool showsUnread;
 }
 
 /// The areas in their order. The administration is the admins' alone and comes last.
 List<_Area> _areasFor(FamilyType type, {required bool isAdmin}) => [
+  const _Area(
+    'Aktuelles',
+    'Was steht an, was ist passiert',
+    Icons.notifications_outlined,
+    Color(0xFFB5452F),
+    ActivityScreen(),
+    showsUnread: true,
+  ),
   const _Area('Kalender', 'Termine', Icons.calendar_month, Color(0xFF3567B5), CalendarScreen()),
   const _Area('Einkaufen', 'Einkaufslisten', Icons.shopping_cart_outlined, Color(0xFF5E8C2B), ShoppingScreen()),
   const _Area('Listen', 'Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
@@ -258,6 +270,10 @@ class _AreaTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(area.icon, size: 36, color: colors.onPrimaryContainer),
+                  if (area.showsUnread) ...[
+                    const Spacer(),
+                    UnreadActivities(background: colors.onPrimaryContainer, foreground: colors.primaryContainer),
+                  ],
                   if (area.comingSoon) ...[
                     const Spacer(),
                     Flexible(

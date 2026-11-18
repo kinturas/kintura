@@ -108,6 +108,8 @@ func (s *Server) acceptInvitation(w http.ResponseWriter, r *http.Request, c reqC
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	// The others see the new member at once.
+	s.publish(familyID, "family")
 	writeJSON(w, http.StatusOK, map[string]string{"family_id": familyID})
 	return nil
 }

@@ -68,8 +68,34 @@ func (s *Server) shoppingListChangeAccess(ctx context.Context, c reqCtx, id stri
 	return nil
 }
 
-// shoppingItemList returns the list of an item the user may see.
-func (s *Server) shoppingItemList(ctx context.Context, c reqCtx, itemID string) (string, error) {
+// shoppingListWriter limits a query on shopping lists l to those whose articles the user
+// may change: the ones it concerns, that is its creator and the people it is for. A list
+// that is only visible to everyone is read-only for the others. It takes the user id twice.
+const shoppingListWriter = ` AND (l.assignees_all = 1 OR l.created_by = ?
+	OR EXISTS (SELECT 1 FROM shopping_list_assignees a WHERE a.list_id = l.id AND a.user_id = ?)) `
+
+const shoppingReadOnly = "Diese Einkaufsliste kannst du nur ansehen. Ändern können sie die Personen, die sie betrifft."
+
+// shoppingListWriteAccess is for putting articles on a list, checking them off and their
+// notes and photos. Managers and admins may, as they may change the list itself.
+func (s *Server) shoppingListWriteAccess(ctx context.Context, c reqCtx, id string) error {
+	if err := s.shoppingListAccess(ctx, c, id); err != nil {
+		return err
+	}
+	if c.isManager() || c.isAdmin {
+		return nil
+	}
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM shopping_lists l WHERE l.id = ?`+shoppingListWriter,
+		id, c.userID, c.userID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fail(http.StatusForbidden, shoppingReadOnly)
+	}
+	return err
+}
+
+// shoppingItemList returns the list of an item the user may see, or change with write.
+func (s *Server) shoppingItemList(ctx context.Context, c reqCtx, itemID string, write bool) (string, error) {
 	var listID string
 	err := s.db.QueryRowContext(ctx, `SELECT list_id FROM shopping_items WHERE id = ? AND family_id = ?`, itemID, c.familyID).Scan(&listID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -77,6 +103,9 @@ func (s *Server) shoppingItemList(ctx context.Context, c reqCtx, itemID string) 
 	}
 	if err != nil {
 		return "", err
+	}
+	if write {
+		return listID, s.shoppingListWriteAccess(ctx, c, listID)
 	}
 	return listID, s.shoppingListAccess(ctx, c, listID)
 }
@@ -87,9 +116,10 @@ func (s *Server) listShoppingLists(w http.ResponseWriter, r *http.Request, c req
 	ctx := r.Context()
 	rows, err := queryRows(ctx, s.db,
 		`SELECT l.id, l.name, l.color, l.created_by, l.assignees_all, l.visibility,
-			(SELECT COUNT(*) FROM shopping_items i WHERE i.list_id = l.id AND i.done = 0) AS open_items
+			(SELECT COUNT(*) FROM shopping_items i WHERE i.list_id = l.id AND i.done = 0) AS open_items,
+			EXISTS (SELECT 1 FROM shopping_lists w WHERE w.id = l.id`+strings.ReplaceAll(shoppingListWriter, "l.", "w.")+`) AS concerns_me
 		 FROM shopping_lists l WHERE l.family_id = ?`+shoppingListVisible+`ORDER BY l.name, l.id`,
-		c.familyID, c.userID, c.userID)
+		c.userID, c.userID, c.familyID, c.userID, c.userID)
 	if err != nil {
 		return err
 	}
@@ -111,6 +141,10 @@ func (s *Server) listShoppingLists(w http.ResponseWriter, r *http.Request, c req
 		row["assignee_ids"] = ids
 		creator, _ := row["created_by"].(string)
 		row["can_edit"] = c.isManager() || c.isAdmin || creator == c.userID
+		// EXISTS comes as a number from SQLite and as a bool from Postgres.
+		concerns := row["concerns_me"] == true || row["concerns_me"] == int64(1)
+		delete(row, "concerns_me")
+		row["can_write"] = c.isManager() || c.isAdmin || concerns
 	}
 	writeJSON(w, http.StatusOK, rows)
 	return nil
@@ -138,8 +172,9 @@ func (s *Server) readShoppingList(w http.ResponseWriter, r *http.Request, c reqC
 		return in, fail(http.StatusBadRequest, "Ungültige Farbe")
 	}
 	in.Color = strings.ToUpper(in.Color)
+	// Only for the people it concerns, unless made visible to everyone, read-only.
 	if in.Visibility == "" {
-		in.Visibility = "all"
+		in.Visibility = "participants"
 	}
 	if in.Visibility != "all" && in.Visibility != "participants" {
 		return in, fail(http.StatusBadRequest, "Ungültige Sichtbarkeit")
@@ -198,6 +233,24 @@ func (s *Server) createShoppingList(w http.ResponseWriter, r *http.Request, c re
 	if err := setShoppingAssignees(ctx, tx, id, in.AssigneeIDs); err != nil {
 		return err
 	}
+	people, err := shoppingListPeople(ctx, tx, c.familyID, id)
+	if err != nil {
+		return err
+	}
+	kind := activityListAdded
+	if in.everyone {
+		kind = activityListAll
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, kind, id, in.Name, people); err != nil {
+		return err
+	}
+	readers, err := shoppingListReaders(ctx, tx, c.familyID, id, people)
+	if err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityListReadable, id, in.Name, readers); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -219,12 +272,36 @@ func (s *Server) updateShoppingList(w http.ResponseWriter, r *http.Request, c re
 		return err
 	}
 	defer tx.Rollback()
+	oldPeople, err := shoppingListPeople(ctx, tx, c.familyID, id)
+	if err != nil {
+		return err
+	}
+	oldReaders, err := shoppingListReaders(ctx, tx, c.familyID, id, oldPeople)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE shopping_lists SET name = ?, color = ?, assignees_all = ?, visibility = ? WHERE id = ? AND family_id = ?`,
 		in.Name, in.Color, in.everyone, in.Visibility, id, c.familyID); err != nil {
 		return err
 	}
 	if err := setShoppingAssignees(ctx, tx, id, in.AssigneeIDs); err != nil {
+		return err
+	}
+	people, err := shoppingListPeople(ctx, tx, c.familyID, id)
+	if err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityListAdded, id, in.Name, minus(people, oldPeople)); err != nil {
+		return err
+	}
+	// Someone who could change it before and now only look at it is not told anything new.
+	readers, err := shoppingListReaders(ctx, tx, c.familyID, id, people)
+	if err != nil {
+		return err
+	}
+	newReaders := minus(minus(readers, oldReaders), oldPeople)
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityListReadable, id, in.Name, newReaders); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -238,8 +315,27 @@ func (s *Server) deleteShoppingList(w http.ResponseWriter, r *http.Request, c re
 	if err := s.shoppingListChangeAccess(ctx, c, id); err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM shopping_lists WHERE id = ? AND family_id = ?`, id, c.familyID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	people, err := shoppingListPeople(ctx, tx, c.familyID, id)
+	if err != nil {
+		return err
+	}
+	var name string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM shopping_lists WHERE id = ? AND family_id = ?`, id, c.familyID).Scan(&name); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM shopping_lists WHERE id = ? AND family_id = ?`, id, c.familyID)
 	if err := requireAffected(res, err); err != nil {
+		return err
+	}
+	if err := addActivity(ctx, tx, c.familyID, c.userID, activityListDeleted, id, name, people); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return noContent(w)
@@ -288,7 +384,7 @@ func (s *Server) listShoppingItems(w http.ResponseWriter, r *http.Request, c req
 // what was noted about it; one already open stays as it is.
 func (s *Server) addShoppingItem(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, listID := r.Context(), r.PathValue("id")
-	if err := s.shoppingListAccess(ctx, c, listID); err != nil {
+	if err := s.shoppingListWriteAccess(ctx, c, listID); err != nil {
 		return err
 	}
 	var in struct {
@@ -301,27 +397,52 @@ func (s *Server) addShoppingItem(w http.ResponseWriter, r *http.Request, c reqCt
 	if err != nil {
 		return err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	status := http.StatusOK
 	var id string
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM shopping_items WHERE list_id = ? AND name = ?`, listID, name).Scan(&id)
-	if err == nil {
-		if _, err := s.db.ExecContext(ctx,
+	err = tx.QueryRowContext(ctx, `SELECT id FROM shopping_items WHERE list_id = ? AND name = ?`, listID, name).Scan(&id)
+	switch {
+	case err == nil:
+		res, err := tx.ExecContext(ctx,
 			`UPDATE shopping_items SET done = 0, done_at = '', added_by = ?, created_at = ? WHERE id = ? AND done = 1`,
-			c.userID, now(), id); err != nil {
+			c.userID, now(), id)
+		if err != nil {
 			return err
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"id": id})
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+		// Already on the list: nothing new to tell anyone.
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			writeJSON(w, status, map[string]string{"id": id})
+			return err
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		id, status = newID(), http.StatusCreated
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO shopping_items (id, family_id, list_id, name, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+			id, c.familyID, listID, name, c.userID, now()); err != nil {
+			return err
+		}
+	default:
 		return err
 	}
-	id = newID()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO shopping_items (id, family_id, list_id, name, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, c.familyID, listID, name, c.userID, now()); err != nil {
+	var listName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM shopping_lists WHERE id = ?`, listID).Scan(&listName); err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+	people, err := shoppingListPeople(ctx, tx, c.familyID, listID)
+	if err != nil {
+		return err
+	}
+	if err := addGatheredActivity(ctx, tx, c.familyID, c.userID, activityItemsAdded, listID, listName, name, people); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	writeJSON(w, status, map[string]string{"id": id})
 	return nil
 }
 
@@ -330,7 +451,7 @@ func (s *Server) addShoppingItem(w http.ResponseWriter, r *http.Request, c reqCt
 // the notes, and the entry here goes.
 func (s *Server) updateShoppingItem(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
-	listID, err := s.shoppingItemList(ctx, c, id)
+	listID, err := s.shoppingItemList(ctx, c, id, true)
 	if err != nil {
 		return err
 	}
@@ -358,7 +479,7 @@ func (s *Server) updateShoppingItem(w http.ResponseWriter, r *http.Request, c re
 		in.ListID = listID
 	}
 	if in.ListID != listID {
-		if err := s.shoppingListAccess(ctx, c, in.ListID); err != nil {
+		if err := s.shoppingListWriteAccess(ctx, c, in.ListID); err != nil {
 			if errors.Is(err, errNotFound) {
 				return fail(http.StatusBadRequest, "Diese Liste gibt es nicht.")
 			}
@@ -414,7 +535,7 @@ func (s *Server) updateShoppingItem(w http.ResponseWriter, r *http.Request, c re
 
 func (s *Server) deleteShoppingItem(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
-	if _, err := s.shoppingItemList(ctx, c, id); err != nil {
+	if _, err := s.shoppingItemList(ctx, c, id, true); err != nil {
 		return err
 	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM shopping_items WHERE id = ?`, id)
@@ -432,7 +553,7 @@ var shoppingPhotoTypes = map[string]bool{"image/jpeg": true, "image/png": true, 
 // photos. The app makes it small before it sends it.
 func (s *Server) uploadShoppingPhoto(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, itemID := r.Context(), r.PathValue("id")
-	if _, err := s.shoppingItemList(ctx, c, itemID); err != nil {
+	if _, err := s.shoppingItemList(ctx, c, itemID, true); err != nil {
 		return err
 	}
 	var count int
@@ -483,7 +604,7 @@ func (s *Server) uploadShoppingPhoto(w http.ResponseWriter, r *http.Request, c r
 	return nil
 }
 
-func (s *Server) shoppingPhotoItem(ctx context.Context, c reqCtx, id string) error {
+func (s *Server) shoppingPhotoItem(ctx context.Context, c reqCtx, id string, write bool) error {
 	var itemID string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT p.item_id FROM shopping_item_photos p JOIN shopping_items i ON i.id = p.item_id WHERE p.id = ? AND i.family_id = ?`,
@@ -494,13 +615,13 @@ func (s *Server) shoppingPhotoItem(ctx context.Context, c reqCtx, id string) err
 	if err != nil {
 		return err
 	}
-	_, err = s.shoppingItemList(ctx, c, itemID)
+	_, err = s.shoppingItemList(ctx, c, itemID, write)
 	return err
 }
 
 func (s *Server) getShoppingPhoto(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
-	if err := s.shoppingPhotoItem(ctx, c, id); err != nil {
+	if err := s.shoppingPhotoItem(ctx, c, id, false); err != nil {
 		return err
 	}
 	var contentType string
@@ -517,7 +638,7 @@ func (s *Server) getShoppingPhoto(w http.ResponseWriter, r *http.Request, c reqC
 
 func (s *Server) deleteShoppingPhoto(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
-	if err := s.shoppingPhotoItem(ctx, c, id); err != nil {
+	if err := s.shoppingPhotoItem(ctx, c, id, true); err != nil {
 		return err
 	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM shopping_item_photos WHERE id = ?`, id)

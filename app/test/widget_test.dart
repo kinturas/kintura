@@ -495,6 +495,26 @@ class FakeBackend {
         response = shoppingArticles;
       case final path when path.startsWith('/api/families/f1/shopping/'):
         response = _shoppingWrite(request.method, path, body, request.url.queryParameters);
+      case '/api/families/f1/activities/unread':
+        response = {'count': activitiesUnread};
+      case '/api/families/f1/activities/upcoming':
+        response = upcoming;
+      case '/api/families/f1/activities/seen':
+        activitiesUnread = 0;
+        for (final a in activities) {
+          a['new'] = false;
+        }
+        response = null;
+      case '/api/families/f1/activities':
+        // Pages of two, whatever is asked for, to see the paging with few entries.
+        final before = request.url.queryParameters['before'];
+        final start = before == null ? 0 : activities.indexWhere((a) => a['id'] == before) + 1;
+        const limit = 2;
+        final page = activities.skip(start).take(limit).toList();
+        response = {
+          'items': page,
+          'next': start + limit < activities.length ? page.last['id'] : null,
+        };
       default:
         return _json({'error': 'unerwartet: ${request.url.path}'}, 500);
     }
@@ -512,6 +532,7 @@ class FakeBackend {
       'visibility': 'all',
       'open_items': 1,
       'can_edit': true,
+      'can_write': true,
     },
   ];
   List<Map<String, Object?>> shoppingItems = [
@@ -519,6 +540,10 @@ class FakeBackend {
     {'id': 'i2', 'name': 'Brot', 'amount': '', 'note': '', 'urgency': '', 'done': true, 'photo_ids': <String>[]},
   ];
   List<Map<String, Object?>> shoppingArticles = [];
+
+  int activitiesUnread = 0;
+  List<Map<String, Object?>> upcoming = [];
+  List<Map<String, Object?>> activities = [];
 
   /// Keeps what the shopping routes change, as the server would, and records the write.
   Object? _shoppingWrite(String method, String path, Object? body, Map<String, String> query) {

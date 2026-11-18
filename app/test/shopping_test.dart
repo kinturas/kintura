@@ -57,7 +57,7 @@ void main() {
       await tester.tap(find.text('Einkaufen'));
       await tester.pumpAndSettle();
       expect(find.text('Wocheneinkauf'), findsOneWidget);
-      expect(find.text('1 Artikel offen'), findsOneWidget);
+      expect(find.text('1 Artikel offen · für alle sichtbar'), findsOneWidget);
       expect(
         tester.getTopLeft(find.byKey(const Key('shopping-new-list'))).dy,
         greaterThan(tester.getBottomLeft(find.text('Wocheneinkauf')).dy),
@@ -67,7 +67,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('shopping-list-name')), 'Baumarkt');
       await tester.tap(find.text('Ben'));
-      await tester.tap(find.text('Dich und Zugeteilte'));
+      // For the people it concerns unless chosen otherwise.
+      expect(find.text('Betrifft'), findsOneWidget);
+      expect(find.text('Jeden (lesend)'), findsOneWidget);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Speichern'));
       await tester.pumpAndSettle();
@@ -263,6 +265,33 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
       await tester.pumpAndSettle();
       expect(backend.writes['DELETE articles'], {'name': 'Übertopf'});
+      await disposeApp(tester);
+    });
+
+    testWidgets('eine Liste, die einen nicht betrifft, ist nur zum Ansehen', (tester) async {
+      final backend = FakeBackend();
+      backend.shoppingLists.first
+        ..['can_write'] = false
+        ..['can_edit'] = false
+        ..['visibility'] = 'all';
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('nur lesend'), findsOneWidget);
+      expect(find.byTooltip('Liste bearbeiten'), findsNothing);
+      await tester.tap(find.text('Wocheneinkauf'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('shopping-read-only')), findsOneWidget);
+      expect(find.byKey(const Key('shopping-search')), findsNothing);
+      expect(find.text('Zuletzt verwendet'), findsNothing);
+      expect(find.text('Obst & Gemüse'), findsNothing);
+      await tester.tap(_tile('Milch'));
+      await tester.longPress(_tile('Milch'));
+      await tester.pumpAndSettle();
+      expect(backend.writes, isEmpty);
+      expect(find.byKey(const Key('article-detail')), findsNothing);
+      expect(find.textContaining('Diese Liste kannst du nur ansehen.'), findsWidgets);
       await disposeApp(tester);
     });
   });

@@ -61,6 +61,9 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		adminKey:  adminKey,
 		version:   cfg.Version,
 		webDir:    "web",
+
+		live:          newLiveHub(),
+		liveHeartbeat: liveHeartbeat,
 	}, nil
 }
 

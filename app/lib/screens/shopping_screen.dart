@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
 import '../common.dart';
+import '../live_updates.dart';
 import '../session.dart';
 import '../shopping/shopping_catalog.dart';
 import '../shopping/shopping_icons.dart';
@@ -31,19 +32,30 @@ class ShoppingScreen extends StatefulWidget {
   State<ShoppingScreen> createState() => _ShoppingScreenState();
 }
 
-class _ShoppingScreenState extends State<ShoppingScreen> {
+class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
   final _view = GlobalKey<AsyncViewState<(List<dynamic>, List<dynamic>)>>();
+  bool _listening = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_listening) return;
+    _listening = true;
+    listenLive(const {'shopping'}, () => _view.currentState?.reload());
+  }
 
   Future<void> _edit([Map<String, dynamic>? list]) async {
-    final saved = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => _ListFormScreen(list: list)),
-    );
+    final saved = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => _ListFormScreen(list: list)));
     if (saved == true) _view.currentState?.reload();
   }
 
   Future<void> _open(Map<String, dynamic> list, List<dynamic> lists) async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ShoppingListScreen(list: list, lists: lists)),
+      MaterialPageRoute(
+        builder: (_) => ShoppingListScreen(list: list, lists: lists),
+      ),
     );
     _view.currentState?.reload();
   }
@@ -141,7 +153,10 @@ class _ListCard extends StatelessWidget {
                   subtitle: Text(
                     [
                       open == 1 ? '1 Artikel offen' : '$open Artikel offen',
-                      if (list['visibility'] == 'participants') 'privat',
+                      if (list['can_write'] == false)
+                        'nur lesend'
+                      else if (list['visibility'] == 'all')
+                        'für alle sichtbar',
                     ].join(' · '),
                   ),
                   trailing: Row(
@@ -191,7 +206,7 @@ class _ListFormScreenState extends State<_ListFormScreen> {
   late String _color = widget.list?['color'] as String? ?? '';
   late bool _everyone = widget.list?['assignees_all'] as bool? ?? true;
   late final Set<String> _assignees = {...(widget.list?['assignee_ids'] as List? ?? const []).cast<String>()};
-  late String _visibility = widget.list?['visibility'] as String? ?? 'all';
+  late String _visibility = widget.list?['visibility'] as String? ?? 'participants';
   bool _saving = false;
 
   bool get _isNew => widget.list == null;
@@ -241,11 +256,7 @@ class _ListFormScreenState extends State<_ListFormScreen> {
   Future<void> _delete() async {
     final session = SessionScope.of(context);
     final navigator = Navigator.of(context);
-    if (!await confirm(
-      context,
-      '„${widget.list!['name']}“ löschen?',
-      message: 'Alle Artikel der Liste gehen mit.',
-    )) {
+    if (!await confirm(context, '„${widget.list!['name']}“ löschen?', message: 'Alle Artikel der Liste gehen mit.')) {
       return;
     }
     if (!mounted) return;
@@ -303,8 +314,7 @@ class _ListFormScreenState extends State<_ListFormScreen> {
       appBar: AppBar(
         title: Text(_isNew ? 'Neue Einkaufsliste' : 'Liste bearbeiten'),
         actions: [
-          if (!_isNew)
-            IconButton(tooltip: 'Liste löschen', icon: const Icon(Icons.delete_outline), onPressed: _delete),
+          if (!_isNew) IconButton(tooltip: 'Liste löschen', icon: const Icon(Icons.delete_outline), onPressed: _delete),
           TextButton(onPressed: _saving ? null : _save, child: const Text('Speichern')),
           const SizedBox(width: 8),
         ],
@@ -344,7 +354,7 @@ class _ListFormScreenState extends State<_ListFormScreen> {
                         ),
                       ),
                       _section(
-                        'Für',
+                        'Betrifft',
                         Wrap(
                           children: [
                             _personTile(
@@ -372,16 +382,27 @@ class _ListFormScreenState extends State<_ListFormScreen> {
                       ),
                       _section(
                         'Sichtbar für',
-                        SegmentedButton<String>(
-                          segments: [
-                            const ButtonSegment(value: 'all', label: Text('Jeden')),
-                            ButtonSegment(
-                              value: 'participants',
-                              label: Text(_isNew ? 'Dich und Zugeteilte' : 'Zugeteilte und Ersteller'),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SegmentedButton<String>(
+                              segments: const [
+                                ButtonSegment(value: 'participants', label: Text('Zugeteilte und Ersteller')),
+                                ButtonSegment(value: 'all', label: Text('Jeden (lesend)')),
+                              ],
+                              selected: {_visibility},
+                              onSelectionChanged: (value) => setState(() => _visibility = value.first),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _visibility == 'all'
+                                  ? 'Alle im Kreis sehen die Liste. Ändern können sie nur die Personen, die sie betrifft.'
+                                  : 'Nur die Personen, die sie betrifft, und wer sie angelegt hat, sehen und ändern die Liste.',
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                             ),
                           ],
-                          selected: {_visibility},
-                          onSelectionChanged: (value) => setState(() => _visibility = value.first),
                         ),
                       ),
                     ],
@@ -411,7 +432,7 @@ class ShoppingListScreen extends StatefulWidget {
   State<ShoppingListScreen> createState() => _ShoppingListScreenState();
 }
 
-class _ShoppingListScreenState extends State<ShoppingListScreen> {
+class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload {
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   Map<String, Article>? _articles;
@@ -429,10 +450,16 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
   void initState() {
     super.initState();
     _search.addListener(() => setState(() {}));
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
-    // Others shop with the same list; this keeps it fresh without a push service.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load();
+      listenLive(const {'shopping'}, () {
+        if (!_paused) _load();
+      });
+    });
+    // Others shop with the same list. With a live connection the server tells of their
+    // changes; without one this keeps it fresh.
     _timer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (!_paused) _load(articles: false);
+      if (!_paused && !liveConnected) _load(articles: false);
     });
   }
 
@@ -564,40 +591,58 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.list['name'] as String),
-        bottom: PreferredSize(preferredSize: const Size.fromHeight(4), child: Container(height: 4, color: color)),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(4),
+          child: Container(height: 4, color: color),
+        ),
       ),
       body: articles == null
           ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
           : Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                  child: TextField(
-                    key: const Key('shopping-search'),
-                    controller: _search,
-                    focusNode: _searchFocus,
-                    textCapitalization: TextCapitalization.sentences,
-                    decoration: InputDecoration(
-                      hintText: 'Ich möchte einkaufen …',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _search.text.isEmpty
-                          ? null
-                          : IconButton(tooltip: 'Leeren', icon: const Icon(Icons.close), onPressed: _search.clear),
-                      border: const OutlineInputBorder(),
-                      isDense: true,
+                if (_readOnly)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Card(
+                      key: const Key('shopping-read-only'),
+                      elevation: 0,
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      child: const ListTile(
+                        leading: Icon(Icons.visibility_outlined),
+                        title: Text('Nur lesend'),
+                        subtitle: Text(_readOnlyHint),
+                      ),
                     ),
-                    onSubmitted: (text) {
-                      final found = searchArticles(articles.values, text);
-                      if (found.isNotEmpty && searchKey(found.first.name) == searchKey(text)) {
-                        _search.clear();
-                        _add(found.first.name);
-                      } else if (text.trim().isNotEmpty) {
-                        _addOwn(text);
-                      }
-                      _searchFocus.requestFocus();
-                    },
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: TextField(
+                      key: const Key('shopping-search'),
+                      controller: _search,
+                      focusNode: _searchFocus,
+                      textCapitalization: TextCapitalization.sentences,
+                      decoration: InputDecoration(
+                        hintText: 'Ich möchte einkaufen …',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _search.text.isEmpty
+                            ? null
+                            : IconButton(tooltip: 'Leeren', icon: const Icon(Icons.close), onPressed: _search.clear),
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onSubmitted: (text) {
+                        final found = searchArticles(articles.values, text);
+                        if (found.isNotEmpty && searchKey(found.first.name) == searchKey(text)) {
+                          _search.clear();
+                          _add(found.first.name);
+                        } else if (text.trim().isNotEmpty) {
+                          _addOwn(text);
+                        }
+                        _searchFocus.requestFocus();
+                      },
+                    ),
                   ),
-                ),
                 Expanded(
                   child: RefreshIndicator(
                     onRefresh: _load,
@@ -647,12 +692,23 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
       badgeColor: urgency?.$3,
       hasPhotos: open && ((entry!['photo_ids'] as List?)?.isNotEmpty ?? false),
       onTap: () {
+        if (_readOnly) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(const SnackBar(content: Text(_readOnlyHint)));
+          return;
+        }
         if (_search.text.isNotEmpty) _search.clear();
         _toggle(article.name);
       },
-      onLongPress: () => _openArticle(article.name),
+      onLongPress: _readOnly ? null : () => _openArticle(article.name),
     );
   }
+
+  /// Visible to everyone, but not for this user: looking only.
+  bool get _readOnly => widget.list['can_write'] == false;
+
+  static const _readOnlyHint = 'Diese Liste kannst du nur ansehen. Ändern können sie die Personen, die sie betrifft.';
 
   Widget _overview(Map<String, Article> articles) {
     final open = _items.where((i) => i['done'] == false).toList();
@@ -672,18 +728,20 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 24),
             child: Text(
-              'Die Liste ist leer. Suche oben oder tippe unten auf einen Artikel.',
+              _readOnly
+                  ? 'Auf der Liste steht gerade nichts.'
+                  : 'Die Liste ist leer. Suche oben oder tippe unten auf einen Artikel.',
               textAlign: TextAlign.center,
               style: text.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
           )
         else
           _Tiles([for (final item in open) _tile(_articleOf(item['name'] as String), item: item)]),
-        if (recent.isNotEmpty) ...[
+        if (recent.isNotEmpty && !_readOnly) ...[
           _Header(icon: Icons.history, label: 'Zuletzt verwendet'),
           _Tiles([for (final item in recent) _tile(_articleOf(item['name'] as String), item: item)]),
         ],
-        for (final category in shoppingCategories)
+        for (final category in _readOnly ? const <ShoppingCategory>[] : shoppingCategories)
           if (byCategory[category.key] case final list? when list.isNotEmpty) ...[
             _Header(
               icon: category.icon,
@@ -818,11 +876,9 @@ class _ArticleTile extends StatelessWidget {
                       maxLines: detail.isEmpty ? 2 : 1,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: foreground,
-                        height: 1.15,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelMedium?.copyWith(color: foreground, height: 1.15, fontWeight: FontWeight.w600),
                     ),
                     if (detail.isNotEmpty)
                       Text(
@@ -830,7 +886,9 @@ class _ArticleTile extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: foreground.withValues(alpha: 0.85)),
+                        style: Theme.of(
+                          context,
+                        ).textTheme.labelSmall?.copyWith(color: foreground.withValues(alpha: 0.85)),
                       ),
                   ],
                 ),
@@ -1035,17 +1093,21 @@ class _ArticleScreenState extends State<_ArticleScreen> {
     if (item == null || !mounted) return;
     await guarded(context, () async {
       final result = await session.api.upload('$_base/items/${item['id']}/photos', 'foto.jpg', bytes);
-      setState(() => _item = {
-        ...item,
-        'photo_ids': [..._photos, (result as Map<String, dynamic>)['id'] as String],
-      });
+      setState(
+        () => _item = {
+          ...item,
+          'photo_ids': [..._photos, (result as Map<String, dynamic>)['id'] as String],
+        },
+      );
     });
   }
 
   Future<void> _showPhoto(String id) async {
     final session = SessionScope.of(context);
     final deleted = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => _PhotoScreen(path: '$_base/photos/$id', title: widget.article.name)),
+      MaterialPageRoute(
+        builder: (_) => _PhotoScreen(path: '$_base/photos/$id', title: widget.article.name),
+      ),
     );
     if (deleted != true || !mounted) return;
     final ok = await guarded(context, () => session.api.delete('$_base/photos/$id'));
@@ -1209,8 +1271,7 @@ class _ArticleScreenState extends State<_ArticleScreen> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          for (final id in _photos)
-                            _PhotoThumb(path: '$_base/photos/$id', onTap: () => _showPhoto(id)),
+                          for (final id in _photos) _PhotoThumb(path: '$_base/photos/$id', onTap: () => _showPhoto(id)),
                           if (_photos.length < 6)
                             SizedBox(
                               width: 88,
@@ -1311,9 +1372,9 @@ class _IconPickerScreenState extends State<_IconPickerScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: selected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: selected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -1332,7 +1393,8 @@ class _IconPickerScreenState extends State<_IconPickerScreen> {
         continue;
       }
       // Names that start with the search first, then any that contain it.
-      final hit = names.where((n) => searchKey(n).startsWith(query)).firstOrNull ??
+      final hit =
+          names.where((n) => searchKey(n).startsWith(query)).firstOrNull ??
           names.where((n) => searchKey(n).contains(query)).firstOrNull;
       if (hit != null) matches.add((key, hit));
     }
@@ -1376,7 +1438,11 @@ class _IconPickerScreenState extends State<_IconPickerScreen> {
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 32),
                     children: [
                       if (query.isEmpty)
-                        _choice('', 'Anfangsbuchstabe', ArticleIcon(icon: '', name: widget.name, size: 36, color: iconColor)),
+                        _choice(
+                          '',
+                          'Anfangsbuchstabe',
+                          ArticleIcon(icon: '', name: widget.name, size: 36, color: iconColor),
+                        ),
                       for (final (key, label) in matches)
                         _choice(key, label, ArticleIcon(icon: key, name: '', size: 36, color: iconColor)),
                     ],

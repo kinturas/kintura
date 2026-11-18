@@ -9,6 +9,7 @@ import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'session.dart';
 import 'session_sync.dart';
+import 'live_updates.dart';
 import 'update_check.dart';
 
 const seedColor = Color(0xFF2E6B57);
@@ -25,6 +26,7 @@ Future<void> main() async {
   await session.loadThemeMode();
   session.start();
   SessionSync(session: session).start();
+  LiveConnection(session: session).start();
   final updates = UpdateCheck(api: api)..start();
   runApp(KinturaApp(session: session, updates: updates));
 }

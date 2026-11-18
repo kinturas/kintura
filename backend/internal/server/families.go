@@ -432,6 +432,8 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 		`DELETE FROM calendar_shares WHERE family_id = ?1 AND user_id = ?2`,
 		`DELETE FROM calendar_feeds WHERE family_id = ?1 AND user_id = ?2`,
 		`DELETE FROM former_memberships WHERE family_id = ?1 AND user_id = ?2`,
+		`DELETE FROM activities WHERE family_id = ?1 AND user_id = ?2`,
+		`DELETE FROM activity_seen WHERE family_id = ?1 AND user_id = ?2`,
 	} {
 		if _, err := tx.ExecContext(ctx, query, familyID, userID); err != nil {
 			return nil, err

@@ -377,8 +377,11 @@ Anlegen und Bearbeiten sofort die Farbe, die der Termin mit der aktuellen Auswah
 Die Kachel „Einkaufen“ zeigt die Einkaufslisten, die man sehen darf, und am Ende einen Knopf für eine neue. Unter „Listen“
 gibt es nur noch Aufgabenlisten; das Backend nimmt dort keine neuen Einkaufslisten mehr an.
 
-- **Liste:** Name, Farbe aus der Farbtabelle des Kreises, „Für“ (alle oder einzelne Mitglieder) und „Sichtbar für“ wie bei
-  Terminen. Wer eine Liste sieht, darf Artikel hinzufügen und abhaken; ändern und löschen dürfen nur Ersteller und Manager.
+- **Liste:** Name, Farbe aus der Farbtabelle des Kreises, „Betrifft“ (alle oder einzelne Mitglieder) und „Sichtbar für“.
+  Vorgabe ist „Zugeteilte und Ersteller“: nur sie sehen die Liste. „Jeden (lesend)“ zeigt sie allen im Kreis, die
+  anderen können sie aber nur ansehen (`can_write` false, Schreibzugriffe 403). Artikel hinzufügen, abhaken, Notizen
+  und Fotos dürfen die Betroffenen, der Ersteller, Manager und Admins; die Liste selbst ändern und löschen nur
+  Ersteller, Manager und Admins.
 - **Artikel:** Der Katalog mit Kategorien und Symbolen steht in der App (`app/lib/shopping/shopping_catalog.dart`), die
   Strich-Symbole in `shopping_icons.dart` als SVG-Pfade auf 24 × 24. Das Backend kennt Artikel nur beim Namen. In
   `shopping_articles` stehen die eigenen Artikel eines Kreises (`custom = 1`) und geänderte Symbole oder Kategorien von
@@ -397,8 +400,45 @@ gibt es nur noch Aufgabenlisten; das Backend nimmt dort keine neuen Einkaufslist
   Artikel schon hat, übernimmt diese die Angaben.
 - **Fotos:** höchstens 6 pro Artikel, die App verkleinert sie auf 1280 Pixel. Sie liegen in der Datenbank
   (`shopping_item_photos`), nicht in der Dateiablage.
-- **Aktualisieren:** Die offene Liste lädt alle 30 Sekunden neu und mit Herunterziehen. Eine sofortige Übertragung per
-  Server-Push gibt es noch nicht.
+- **Aktualisieren:** Änderungen anderer kommen per Live-Verbindung sofort an (siehe unten). Ohne Verbindung lädt die
+  offene Liste alle 30 Sekunden neu, außerdem mit Herunterziehen.
+
+## Aktuelles
+
+Die erste Kachel zeigt, was ansteht und was passiert ist, mit der Zahl der ungelesenen Einträge.
+
+- **Was steht an:** die Termine der nächsten 7 Tage, an denen man teilnimmt (`GET …/activities/upcoming`, höchstens 10,
+  Serien mit jedem Vorkommen).
+- **Was ist passiert:** je Empfänger eine Zeile in `activities`. Gespeichert wird nur, was passiert ist (`kind`), wer
+  (`actor_id`) und der Name des Termins oder der Liste; den Satz baut die App. Arten: zu einem Termin hinzugefügt,
+  herausgenommen, Termin geändert (Titel, Zeit, Ort, Beschreibung oder Wiederholung) oder gelöscht, Termin für alle;
+  zu einer Einkaufsliste hinzugefügt, Liste für alle, Liste zum Ansehen freigegeben (lesend), Liste gelöscht; Artikel
+  auf eine Liste gesetzt. Wer etwas tut,
+  bekommt keinen Eintrag dazu.
+- **Wen es betrifft:** bei Terminen die Beteiligten (alle bei „für alle“), bei Einkaufslisten die Zugeteilten und wer
+  sie angelegt hat (alle bei „für alle“).
+- **Zusammenfassen:** Artikel derselben Person auf derselben Liste werden innerhalb von 2 Stunden ein Eintrag („Ben hat
+  5 Artikel auf „Wocheneinkauf“ gesetzt: …“). Mehrere Änderungen an einem Termin in dieser Zeit ersetzen sich.
+- **Seiten:** 20 Einträge je Seite, „Ältere anzeigen“ lädt die nächsten (`?before=` mit dem Zeiger aus `next`).
+  Zeitstempel in Mikrosekunden, damit die Reihenfolge auch innerhalb einer Sekunde feststeht.
+- **Gelesen:** Öffnen der Seite setzt `activity_seen`; die Kachel zählt, was danach kam. Nach 90 Tagen räumt der
+  stündliche Aufräumlauf alte Einträge weg.
+
+## Live-Aktualisierung
+
+Die App hält `GET /api/live` offen, einen Strom von Server-Sent Events. Nach jeder erfolgreichen Änderung in einem
+Kreis (jede Anfrage außer GET auf `/api/families/{fid}/…`) schickt das Backend allen Mitgliedern, die verbunden sind,
+`{"family": "…", "topic": "…"}` mit `shopping`, `calendar` oder `family`. Inhalte gehen nie mit; die App lädt die
+betroffene Seite über die normalen Routen neu, die weiter über Sichtbarkeit entscheiden. Gelesen-Markieren und die
+Auswahl des Kreises melden nichts.
+
+- Alle 25 Sekunden ein Herzschlag, damit Cloudflare die Verbindung nicht nach 100 Sekunden Ruhe schließt. Beim
+  Herzschlag prüft das Backend die Sitzung; nach dem Abmelden endet der Strom.
+- Bricht die Verbindung ab, verbindet die App neu (2 Sekunden, dann länger bis 1 Minute) und lädt danach einmal alles
+  Offene neu. Im Hintergrund trennt sie, beim Zurückkommen verbindet sie sofort.
+- Ohne Verbindung fragt die App wie bisher regelmäßig (Einkaufsliste 30 Sekunden, Sitzungsabgleich 30 Sekunden).
+- Die Verteilung lebt im Prozess. Laufen einmal mehrere Backends hinter einem Proxy, erreicht eine Änderung nur die
+  Apps am selben Backend.
 
 ## Mandantentrennung
 

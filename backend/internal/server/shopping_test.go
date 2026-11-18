@@ -122,21 +122,23 @@ func TestShoppingListVisibility(t *testing.T) {
 	base := "/api/families/" + fid + "/shopping"
 	guest, guestID := e.addMember(fid, owner, "b@example.de")
 	outsider, outsiderID := e.addMember(fid, owner, "c@example.de")
-	_ = outsiderID
 
 	e.expect(400, "POST", base+"/lists", owner, obj{"name": "P", "assignees_all": false})
+	// Without a visibility, a list is for the people it concerns.
 	private := e.expect(201, "POST", base+"/lists", owner, obj{
-		"name": "Geschenke", "assignees_all": false, "assignee_ids": []any{guestID}, "visibility": "participants",
+		"name": "Geschenke", "assignees_all": false, "assignee_ids": []any{guestID},
 	})["id"].(string)
 	open := e.expect(201, "POST", base+"/lists", owner, obj{
-		"name": "Offen", "assignees_all": false, "assignee_ids": []any{guestID},
+		"name": "Offen", "assignees_all": false, "assignee_ids": []any{guestID}, "visibility": "all",
 	})["id"].(string)
 
-	if lists := e.shoppingLists(guest, fid); len(lists) != 2 || lists[0]["can_edit"] != false ||
-		fmt.Sprint(lists[0]["assignee_ids"]) != "["+guestID+"]" {
+	if lists := e.shoppingLists(guest, fid); len(lists) != 2 || lists[0]["can_edit"] != false || lists[0]["can_write"] != true ||
+		lists[0]["visibility"] != "participants" || fmt.Sprint(lists[0]["assignee_ids"]) != "["+guestID+"]" {
 		t.Fatalf("guest: %v", lists)
 	}
-	if lists := e.shoppingLists(outsider, fid); len(lists) != 1 || lists[0]["id"] != open {
+	// Visible to everyone means read-only for the others.
+	lists := e.shoppingLists(outsider, fid)
+	if len(lists) != 1 || lists[0]["id"] != open || lists[0]["can_write"] != false {
 		t.Fatalf("outsider: %v", lists)
 	}
 	e.expect(404, "GET", base+"/lists/"+private+"/items", outsider, nil)
@@ -144,9 +146,22 @@ func TestShoppingListVisibility(t *testing.T) {
 	item := e.expect(201, "POST", base+"/lists/"+private+"/items", guest, obj{"name": "Milch"})["id"].(string)
 	e.expect(404, "PUT", base+"/items/"+item, outsider, obj{"done": true})
 
-	// An article cannot be moved into a list one cannot see.
-	mine := e.expect(201, "POST", base+"/lists/"+open+"/items", outsider, obj{"name": "Brot"})["id"].(string)
+	bread := e.expect(201, "POST", base+"/lists/"+open+"/items", guest, obj{"name": "Brot"})["id"].(string)
+	e.expect(200, "GET", base+"/lists/"+open+"/items", outsider, nil)
+	if status, out := e.call("POST", base+"/lists/"+open+"/items", outsider, obj{"name": "Käse"}); status != 403 ||
+		out["error"] != shoppingReadOnly {
+		t.Fatalf("reader adds: %d %v", status, out)
+	}
+	e.expect(403, "PUT", base+"/items/"+bread, outsider, obj{"done": true})
+	e.expect(403, "DELETE", base+"/items/"+bread, outsider, nil)
+	e.expect(403, "POST", base+"/items/"+bread+"/photos", outsider, nil)
+
+	// An article cannot be moved into a list one cannot see, nor one one may only look at.
+	own := e.expect(201, "POST", base+"/lists", outsider, obj{"name": "Carl"})["id"].(string)
+	mine := e.expect(201, "POST", base+"/lists/"+own+"/items", outsider, obj{"name": "Brot"})["id"].(string)
 	e.expect(400, "PUT", base+"/items/"+mine, outsider, obj{"list_id": private})
+	e.expect(403, "PUT", base+"/items/"+mine, outsider, obj{"list_id": open})
+	e.expect(204, "DELETE", base+"/lists/"+own, outsider, nil)
 
 	// Seeing a list allows to shop with it, not to change it.
 	e.expect(403, "PUT", base+"/lists/"+private, guest, obj{"name": "X"})
@@ -170,7 +185,7 @@ func TestShoppingListVisibility(t *testing.T) {
 			t.Errorf("%v after deleting: %s, want %s", list["name"], got, want)
 		}
 	}
-	if lists := e.shoppingLists(outsider, fid); len(lists) != 1 || lists[0]["id"] != open {
+	if lists := e.shoppingLists(outsider, fid); len(lists) != 1 || lists[0]["id"] != open || lists[0]["can_write"] != true {
 		t.Fatalf("outsider after deleting: %v", lists)
 	}
 }

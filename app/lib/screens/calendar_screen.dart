@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../common.dart';
+import '../live_updates.dart';
 import '../session.dart';
 import 'calendar_agenda.dart';
 import 'calendar_manage_screen.dart';
@@ -19,7 +20,7 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
   final _today = DateTime.now();
   late DateTime _selected = DateTime(_today.year, _today.month, _today.day);
   var _entries = <CalendarEntry>[];
@@ -75,6 +76,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
     });
     if (!mounted) return;
     setState(() => _prefsLoaded = true);
+    // Events others add or change show up without asking.
+    listenLive(const {'calendar'}, _load);
     await _load();
   }
 

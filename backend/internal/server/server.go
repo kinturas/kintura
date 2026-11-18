@@ -38,6 +38,9 @@ type Server struct {
 
 	holidaysURL       string // overrides the holiday service in tests
 	allowPrivateFeeds bool   // lets tests fetch calendars from their local server
+
+	live          *liveHub
+	liveHeartbeat time.Duration // shorter in tests
 }
 
 // apiError is an error whose message is safe to show to the client. The optional
@@ -137,7 +140,18 @@ func (s *Server) member(h authedFunc) http.HandlerFunc {
 			return err
 		}
 		scopeOf(r).familyID = c.familyID
-		return h(w, r, c)
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			return h(w, r, c)
+		}
+		// A change that went through is announced to the apps that listen, see live.go.
+		sw := &statusWriter{ResponseWriter: w}
+		if err := h(sw, r, c); err != nil {
+			return err
+		}
+		if sw.status < http.StatusBadRequest {
+			s.publish(c.familyID, liveTopic(r.URL.Path))
+		}
+		return nil
 	})
 }
 
@@ -192,6 +206,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/auth/logout", s.authed(s.authLogout))
 
 	mux.Handle("GET /api/me", s.authed(s.getMe))
+	mux.Handle("GET /api/live", s.authed(s.liveStream))
 	mux.Handle("POST /api/me/email", s.authed(s.requestEmailChange))
 	mux.Handle("POST /api/me/email/confirm", s.authed(s.confirmEmailChange))
 	mux.Handle("PUT /api/me/notifications", s.authed(s.setNotifications))
@@ -259,6 +274,10 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/families/{fid}/shopping/articles", s.member(s.createShoppingArticle))
 	mux.Handle("PUT /api/families/{fid}/shopping/articles", s.member(s.putShoppingArticle))
 	mux.Handle("DELETE /api/families/{fid}/shopping/articles", s.member(s.deleteShoppingArticle))
+	mux.Handle("GET /api/families/{fid}/activities", s.member(s.listActivities))
+	mux.Handle("GET /api/families/{fid}/activities/unread", s.member(s.unreadActivities))
+	mux.Handle("GET /api/families/{fid}/activities/upcoming", s.member(s.upcomingEvents))
+	mux.Handle("POST /api/families/{fid}/activities/seen", s.member(s.markActivitiesSeen))
 
 	mux.Handle("GET /api/families/{fid}/events", s.member(s.listEvents))
 	mux.Handle("POST /api/families/{fid}/events", s.member(s.createEvent))
@@ -355,6 +374,7 @@ func (s *Server) cleanup(ctx context.Context) {
 	}
 	s.trimErrorLog(ctx)
 	s.cleanupEvents(ctx)
+	s.cleanupActivities(ctx)
 }
 
 func now() string { return time.Now().UTC().Format(timeFormat) }
