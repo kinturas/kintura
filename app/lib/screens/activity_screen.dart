@@ -185,7 +185,7 @@ class _ActivityScreenState extends State<ActivityScreen> with LiveReload {
       messenger.showSnackBar(const SnackBar(content: Text('Diese Einkaufsliste gibt es nicht mehr.')));
       return;
     }
-    await navigator.push(MaterialPageRoute(builder: (_) => ShoppingListScreen(list: list, lists: lists!)));
+    await navigator.push(MaterialPageRoute(builder: (_) => ShoppingScreen(listId: list['id'] as String)));
     if (mounted) await _load();
   }
 

@@ -4,15 +4,17 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNotFound means that there is no file under the key.
 var ErrNotFound = errors.New("Datei nicht gefunden")
 
-// Store holds files by key.
+// Store holds files by key. A key may have a folder in front, as in "family/file".
 type Store interface {
 	// Put reads until EOF and returns the size. If reading fails, nothing stays
 	// behind and the error of the reader comes back as it is.
@@ -36,10 +38,28 @@ func NewLocal(dir string) (*Local, error) {
 	return &Local{dir: dir}, nil
 }
 
-func (l *Local) path(key string) string { return filepath.Join(l.dir, filepath.Base(key)) }
+// path keeps a key inside the directory: each part of it is taken as a plain name, so
+// "family/file" becomes a file in a folder of the family and nothing reaches above.
+func (l *Local) path(key string) (string, error) {
+	parts := strings.Split(key, "/")
+	for i, part := range parts {
+		part = filepath.Base(part)
+		if part == "." || part == ".." || part == string(filepath.Separator) || part == "" {
+			return "", fmt.Errorf("ungültiger Schlüssel %q", key)
+		}
+		parts[i] = part
+	}
+	return filepath.Join(append([]string{l.dir}, parts...)...), nil
+}
 
 func (l *Local) Put(_ context.Context, key string, content io.Reader, _ string) (int64, error) {
-	path := l.path(key)
+	path, err := l.path(key)
+	if err != nil {
+		return 0, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return 0, err
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, err
@@ -56,7 +76,11 @@ func (l *Local) Put(_ context.Context, key string, content io.Reader, _ string) 
 }
 
 func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, int64, error) {
-	file, err := os.Open(l.path(key))
+	path, err := l.path(key)
+	if err != nil {
+		return nil, 0, err
+	}
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, ErrNotFound
 	}
@@ -72,7 +96,11 @@ func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, int64, error)
 }
 
 func (l *Local) Delete(_ context.Context, key string) error {
-	err := os.Remove(l.path(key))
+	path, err := l.path(key)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

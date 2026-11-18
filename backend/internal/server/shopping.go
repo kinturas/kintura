@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -115,10 +117,12 @@ func (s *Server) shoppingItemList(ctx context.Context, c reqCtx, itemID string, 
 func (s *Server) listShoppingLists(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx := r.Context()
 	rows, err := queryRows(ctx, s.db,
-		`SELECT l.id, l.name, l.color, l.created_by, l.assignees_all, l.visibility,
+		`SELECT l.id, l.name, l.color, l.created_by, l.assignees_all, l.visibility, l.due_date,
+			COALESCE(l.category_id, '') AS category_id, COALESCE(k.name, '') AS category_name, COALESCE(k.color, '') AS category_color,
 			(SELECT COUNT(*) FROM shopping_items i WHERE i.list_id = l.id AND i.done = 0) AS open_items,
 			EXISTS (SELECT 1 FROM shopping_lists w WHERE w.id = l.id`+strings.ReplaceAll(shoppingListWriter, "l.", "w.")+`) AS concerns_me
-		 FROM shopping_lists l WHERE l.family_id = ?`+shoppingListVisible+`ORDER BY l.name, l.id`,
+		 FROM shopping_lists l LEFT JOIN categories k ON k.id = l.category_id
+		 WHERE l.family_id = ?`+shoppingListVisible+`ORDER BY l.name, l.id`,
 		c.userID, c.userID, c.familyID, c.userID, c.userID)
 	if err != nil {
 		return err
@@ -156,6 +160,8 @@ type shoppingListInput struct {
 	AssigneesAll *bool    `json:"assignees_all"`
 	AssigneeIDs  []string `json:"assignee_ids"`
 	Visibility   string   `json:"visibility"`
+	CategoryID   string   `json:"category_id"`
+	DueDate      string   `json:"due_date"`
 	everyone     bool
 }
 
@@ -197,6 +203,22 @@ func (s *Server) readShoppingList(w http.ResponseWriter, r *http.Request, c reqC
 			return in, err
 		}
 	}
+	// Both optional: a category of the calendar, and a day by which to have shopped.
+	if in.CategoryID != "" {
+		var found int
+		err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM categories WHERE id = ? AND family_id = ?`, in.CategoryID, c.familyID).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			return in, fail(http.StatusBadRequest, "Unbekannte Kategorie")
+		}
+		if err != nil {
+			return in, err
+		}
+	}
+	if in.DueDate != "" {
+		if _, err := time.Parse("2006-01-02", in.DueDate); err != nil {
+			return in, fail(http.StatusBadRequest, "Ungültiges Fälligkeitsdatum")
+		}
+	}
 	return in, nil
 }
 
@@ -225,9 +247,9 @@ func (s *Server) createShoppingList(w http.ResponseWriter, r *http.Request, c re
 	defer tx.Rollback()
 	id := newID()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO shopping_lists (id, family_id, name, color, created_by, assignees_all, visibility, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, c.familyID, in.Name, in.Color, c.userID, in.everyone, in.Visibility, now()); err != nil {
+		`INSERT INTO shopping_lists (id, family_id, name, color, created_by, assignees_all, visibility, created_at, category_id, due_date)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, c.familyID, in.Name, in.Color, c.userID, in.everyone, in.Visibility, now(), nullable(in.CategoryID), in.DueDate); err != nil {
 		return err
 	}
 	if err := setShoppingAssignees(ctx, tx, id, in.AssigneeIDs); err != nil {
@@ -281,8 +303,8 @@ func (s *Server) updateShoppingList(w http.ResponseWriter, r *http.Request, c re
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE shopping_lists SET name = ?, color = ?, assignees_all = ?, visibility = ? WHERE id = ? AND family_id = ?`,
-		in.Name, in.Color, in.everyone, in.Visibility, id, c.familyID); err != nil {
+		`UPDATE shopping_lists SET name = ?, color = ?, assignees_all = ?, visibility = ?, category_id = ?, due_date = ? WHERE id = ? AND family_id = ?`,
+		in.Name, in.Color, in.everyone, in.Visibility, nullable(in.CategoryID), in.DueDate, id, c.familyID); err != nil {
 		return err
 	}
 	if err := setShoppingAssignees(ctx, tx, id, in.AssigneeIDs); err != nil {
@@ -771,4 +793,81 @@ func deleteMemberShopping(ctx context.Context, tx *database.Tx, familyID, userID
 		}
 	}
 	return nil
+}
+
+// --- The last list ---
+
+// lastShoppingList is GET /shopping/last: the list the user had open last, for the app
+// to go there straight away. Empty if there is none, or none the user still sees.
+func (s *Server) lastShoppingList(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	ctx := r.Context()
+	var listID string
+	err := s.db.QueryRowContext(ctx, `SELECT list_id FROM shopping_last WHERE family_id = ? AND user_id = ?`, c.familyID, c.userID).Scan(&listID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if listID != "" {
+		if err := s.shoppingListAccess(ctx, c, listID); errors.Is(err, errNotFound) {
+			listID = ""
+		} else if err != nil {
+			return err
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"list_id": listID})
+	return nil
+}
+
+// setLastShoppingList is PUT /shopping/last, when the app opens a list.
+func (s *Server) setLastShoppingList(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	var in struct {
+		ListID string `json:"list_id"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		return err
+	}
+	ctx := r.Context()
+	if err := s.shoppingListAccess(ctx, c, in.ListID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO shopping_last (family_id, user_id, list_id) VALUES (?, ?, ?)
+		 ON CONFLICT (family_id, user_id) DO UPDATE SET list_id = excluded.list_id`,
+		c.familyID, c.userID, in.ListID); err != nil {
+		return err
+	}
+	return noContent(w)
+}
+
+// --- Due lists in the calendar ---
+
+// dueShoppingLists returns the shopping lists the user sees with a due date from first
+// to last, for the calendar "Geplante Aufgaben", with what is still open on them.
+func (s *Server) dueShoppingLists(ctx context.Context, c reqCtx, first, last string) ([]map[string]any, error) {
+	return queryRows(ctx, s.db,
+		`SELECT l.id, l.name, l.due_date, COALESCE(k.name, '') AS category_name, COALESCE(k.color, '') AS category_color,
+			(SELECT COUNT(*) FROM shopping_items i WHERE i.list_id = l.id AND i.done = 0) AS open_items
+		 FROM shopping_lists l LEFT JOIN categories k ON k.id = l.category_id
+		 WHERE l.family_id = ? AND l.due_date <> '' AND l.due_date >= ? AND l.due_date <= ?`+shoppingListVisible+
+			`ORDER BY l.due_date, l.name`,
+		c.familyID, first, last, c.userID, c.userID)
+}
+
+func shoppingListEntryTitle(list map[string]any) string {
+	return "Einkaufen: " + list["name"].(string)
+}
+
+func shoppingListEntryNote(list map[string]any) string {
+	note := "Einkaufsliste"
+	switch n := list["open_items"].(int64); n {
+	case 0:
+		note += ", nichts offen"
+	case 1:
+		note += ", 1 Artikel offen"
+	default:
+		note += fmt.Sprintf(", %d Artikel offen", n)
+	}
+	if category := list["category_name"].(string); category != "" {
+		note += " · " + category
+	}
+	return note
 }

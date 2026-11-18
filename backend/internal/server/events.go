@@ -810,14 +810,14 @@ func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 		return err
 	}
 	for _, attachment := range attachments {
-		s.removeStoredFile(r, attachment["id"].(string))
+		s.removeStoredFile(r, fileKey(c.familyID, attachment["id"].(string)))
 	}
 	return noContent(w)
 }
 
-// removeStoredFile removes the file of a row that is already gone. r may be nil.
-func (s *Server) removeStoredFile(r *http.Request, id string) {
-	if err := s.files.Delete(context.Background(), id); err != nil {
+// removeStoredFile removes the file of a row that is already gone, by its key, see fileKey. r may be nil.
+func (s *Server) removeStoredFile(r *http.Request, key string) {
+	if err := s.files.Delete(context.Background(), key); err != nil {
 		s.logError(r, http.StatusInternalServerError, "Anhang löschen: "+err.Error())
 	}
 }
@@ -860,7 +860,7 @@ func (s *Server) deleteAttachment(w http.ResponseWriter, r *http.Request, c reqC
 	if err := s.eventChangeAccess(r.Context(), c, r.PathValue("id")); err != nil {
 		return err
 	}
-	return s.removeFile(w, r, id)
+	return s.removeFile(w, r, c.familyID, id)
 }
 
 // placeLabel joins the parts of an address, without what repeats itself.

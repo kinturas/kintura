@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
+import '../api.dart';
 import '../common.dart';
 import '../live_updates.dart';
 import '../session.dart';
@@ -24,9 +25,16 @@ Color _listColor(BuildContext context, Map<String, dynamic> list) {
   return color.isEmpty ? Theme.of(context).colorScheme.primary : parseHexColor(color);
 }
 
-/// Einkaufen: the shopping lists of the circle that one may see, and a button for a new one.
+/// Einkaufen, as one page with two views: a list, or all lists.
+///
+/// It opens on [listId] if given, as from the calendar, else on the list one had open
+/// last, else, as on the very first time, on all lists. Back from a list leaves the
+/// page; back from all lists goes to the list one came from, and leaves the page only
+/// when there is none.
 class ShoppingScreen extends StatefulWidget {
-  const ShoppingScreen({super.key});
+  const ShoppingScreen({super.key, this.listId});
+
+  final String? listId;
 
   @override
   State<ShoppingScreen> createState() => _ShoppingScreenState();
@@ -34,14 +42,66 @@ class ShoppingScreen extends StatefulWidget {
 
 class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
   final _view = GlobalKey<AsyncViewState<(List<dynamic>, List<dynamic>)>>();
-  bool _listening = false;
+  bool _started = false;
+  bool _deciding = true;
+
+  /// The list in view, or the one to go back to from all lists.
+  Map<String, dynamic>? _current;
+  bool _showsAll = false;
+
+  /// The lists as last loaded, for moving articles and for coming back from all lists.
+  List<dynamic> _lists = const [];
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_listening) return;
-    _listening = true;
+    if (_started) return;
+    _started = true;
     listenLive(const {'shopping'}, () => _view.currentState?.reload());
+    _decide();
+  }
+
+  Future<void> _decide() async {
+    final session = SessionScope.of(context);
+    final base = '${session.familyPath}/shopping';
+    try {
+      final results = await Future.wait([
+        if (widget.listId == null) session.api.get('$base/last'),
+        session.api.get('$base/lists'),
+      ]);
+      final wanted = widget.listId ?? (results.first as Map<String, dynamic>?)?['list_id'] as String? ?? '';
+      final lists = results.last as List;
+      if (!mounted) return;
+      setState(() {
+        _lists = lists;
+        _current = _find(lists, wanted);
+        _showsAll = _current == null;
+        _deciding = false;
+      });
+    } on ApiException {
+      if (mounted) setState(() => _deciding = false);
+    }
+  }
+
+  static Map<String, dynamic>? _find(List<dynamic> lists, String? id) =>
+      lists.cast<Map<String, dynamic>>().where((l) => l['id'] == id).firstOrNull;
+
+  void _showAll() => setState(() => _showsAll = true);
+
+  void _show(Map<String, dynamic> list, List<dynamic> lists) => setState(() {
+    _lists = lists;
+    _current = list;
+    _showsAll = false;
+  });
+
+  /// Back from all lists: to the list one came from, as it is now, if it is still there.
+  void _back() {
+    final list = _find(_lists, _current?['id'] as String?);
+    if (list == null) {
+      Navigator.of(context).pop();
+    } else {
+      _show(list, _lists);
+    }
   }
 
   Future<void> _edit([Map<String, dynamic>? list]) async {
@@ -51,64 +111,76 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
     if (saved == true) _view.currentState?.reload();
   }
 
-  Future<void> _open(Map<String, dynamic> list, List<dynamic> lists) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ShoppingListScreen(list: list, lists: lists),
-      ),
-    );
-    _view.currentState?.reload();
-  }
-
   @override
   Widget build(BuildContext context) {
     final session = SessionScope.of(context);
-    return Scaffold(
-      appBar: AppBar(title: const Text('Einkaufen')),
-      body: AsyncView<(List<dynamic>, List<dynamic>)>(
-        key: _view,
-        load: () async {
-          final results = await Future.wait([
-            session.api.get('${session.familyPath}/shopping/lists'),
-            session.api.get('${session.familyPath}/members'),
-          ]);
-          return (results[0] as List, (results[1] as Map<String, dynamic>)['members'] as List);
-        },
-        builder: (context, data) {
-          final (lists, members) = data;
-          return RefreshIndicator(
-            onRefresh: () async => _view.currentState?.reload(),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-              children: [
-                if (lists.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 32),
-                    child: EmptyHint(
-                      icon: Icons.shopping_cart_outlined,
-                      text: 'Noch keine Einkaufsliste. Lege die erste an.',
+    if (_deciding) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Einkaufen')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_current case final list? when !_showsAll) {
+      return ShoppingListScreen(
+        key: ValueKey('shopping-list-${list['id']}'),
+        list: list,
+        lists: _lists,
+        onShowLists: _showAll,
+      );
+    }
+    return PopScope(
+      canPop: _current == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _back();
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Einkaufen')),
+        body: AsyncView<(List<dynamic>, List<dynamic>)>(
+          key: _view,
+          load: () async {
+            final results = await Future.wait([
+              session.api.get('${session.familyPath}/shopping/lists'),
+              session.api.get('${session.familyPath}/members'),
+            ]);
+            _lists = results[0] as List;
+            return (_lists, (results[1] as Map<String, dynamic>)['members'] as List);
+          },
+          builder: (context, data) {
+            final (lists, members) = data;
+            return RefreshIndicator(
+              onRefresh: () async => _view.currentState?.reload(),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                children: [
+                  if (lists.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: EmptyHint(
+                        icon: Icons.shopping_cart_outlined,
+                        text: 'Noch keine Einkaufsliste. Lege die erste an.',
+                      ),
+                    ),
+                  for (final list in lists.cast<Map<String, dynamic>>())
+                    _ListCard(
+                      list: list,
+                      members: members,
+                      onTap: () => _show(list, lists),
+                      onEdit: list['can_edit'] == true ? () => _edit(list) : null,
+                    ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: OutlinedButton.icon(
+                      key: const Key('shopping-new-list'),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Neue Einkaufsliste'),
+                      onPressed: () => _edit(),
                     ),
                   ),
-                for (final list in lists.cast<Map<String, dynamic>>())
-                  _ListCard(
-                    list: list,
-                    members: members,
-                    onTap: () => _open(list, lists),
-                    onEdit: list['can_edit'] == true ? () => _edit(list) : null,
-                  ),
-                const SizedBox(height: 12),
-                Center(
-                  child: OutlinedButton.icon(
-                    key: const Key('shopping-new-list'),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Neue Einkaufsliste'),
-                    onPressed: () => _edit(),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -153,6 +225,9 @@ class _ListCard extends StatelessWidget {
                   subtitle: Text(
                     [
                       open == 1 ? '1 Artikel offen' : '$open Artikel offen',
+                      if (DateTime.tryParse(list['due_date'] as String? ?? '') case final due?)
+                        'fällig ${dateFormat.format(due)}',
+                      if ((list['category_name'] as String? ?? '').isNotEmpty) list['category_name'] as String,
                       if (list['can_write'] == false)
                         'nur lesend'
                       else if (list['visibility'] == 'all')
@@ -207,6 +282,8 @@ class _ListFormScreenState extends State<_ListFormScreen> {
   late bool _everyone = widget.list?['assignees_all'] as bool? ?? true;
   late final Set<String> _assignees = {...(widget.list?['assignee_ids'] as List? ?? const []).cast<String>()};
   late String _visibility = widget.list?['visibility'] as String? ?? 'participants';
+  late String _category = widget.list?['category_id'] as String? ?? '';
+  late DateTime? _due = DateTime.tryParse(widget.list?['due_date'] as String? ?? '');
   bool _saving = false;
 
   bool get _isNew => widget.list == null;
@@ -240,6 +317,8 @@ class _ListFormScreenState extends State<_ListFormScreen> {
       'assignees_all': _everyone,
       'assignee_ids': _everyone ? <String>[] : _assignees.toList(),
       'visibility': _visibility,
+      'category_id': _category,
+      'due_date': _due == null ? '' : dateKey(_due!),
     };
     setState(() => _saving = true);
     final ok = await guarded(context, () async {
@@ -319,16 +398,21 @@ class _ListFormScreenState extends State<_ListFormScreen> {
           const SizedBox(width: 8),
         ],
       ),
-      body: AsyncView<(Map<String, dynamic>, List<dynamic>)>(
+      body: AsyncView<(Map<String, dynamic>, List<dynamic>, List<dynamic>)>(
         load: () async {
           final results = await Future.wait([
             session.api.get('${session.familyPath}/colors'),
             session.api.get('${session.familyPath}/members'),
+            session.api.get('${session.familyPath}/categories'),
           ]);
-          return (results[0] as Map<String, dynamic>, (results[1] as Map<String, dynamic>)['members'] as List);
+          return (
+            results[0] as Map<String, dynamic>,
+            (results[1] as Map<String, dynamic>)['members'] as List,
+            (results[2] as Map<String, dynamic>)['categories'] as List,
+          );
         },
         builder: (context, data) {
-          final (colors, members) = data;
+          final (colors, members, categories) = data;
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 48),
             children: [
@@ -381,6 +465,56 @@ class _ListFormScreenState extends State<_ListFormScreen> {
                         ),
                       ),
                       _section(
+                        'Kategorie',
+                        DropdownButtonFormField<String>(
+                          key: const Key('shopping-list-category'),
+                          initialValue: categories.any((k) => k['id'] == _category) ? _category : '',
+                          items: [
+                            const DropdownMenuItem(value: '', child: Text('Keine')),
+                            for (final k in categories.cast<Map<String, dynamic>>())
+                              DropdownMenuItem(
+                                value: k['id'] as String,
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.circle,
+                                      size: 14,
+                                      color: (k['color'] as String? ?? '').isEmpty
+                                          ? Theme.of(context).colorScheme.primary
+                                          : parseHexColor(k['color'] as String),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(k['name'] as String),
+                                  ],
+                                ),
+                              ),
+                          ],
+                          onChanged: (value) => setState(() => _category = value ?? ''),
+                        ),
+                      ),
+                      _section(
+                        'Fällig am',
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            DateField(
+                              key: const Key('shopping-list-due'),
+                              label: 'Datum (optional)',
+                              value: _due,
+                              clearable: true,
+                              onChanged: (date) => setState(() => _due = date),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Mit Datum steht die Liste im Kalender unter „Geplante Aufgaben“.',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      _section(
                         'Sichtbar für',
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -421,12 +555,16 @@ class _ListFormScreenState extends State<_ListFormScreen> {
 /// and all articles by category. A tap puts an article on the list or checks it off,
 /// a long press opens its page.
 class ShoppingListScreen extends StatefulWidget {
-  const ShoppingListScreen({super.key, required this.list, required this.lists});
+  const ShoppingListScreen({super.key, required this.list, required this.lists, this.onShowLists});
 
   final Map<String, dynamic> list;
 
   /// All lists one may see, to move articles between them.
   final List<dynamic> lists;
+
+  /// Shows all lists instead of this one. Without it, as when opened from the
+  /// overview, the button goes back there.
+  final VoidCallback? onShowLists;
 
   @override
   State<ShoppingListScreen> createState() => _ShoppingListScreenState();
@@ -444,6 +582,9 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
   /// Pauses the regular reload while a page of an article is open.
   bool _paused = false;
 
+  /// The list as last loaded; its name, color and rights change when it is edited.
+  late Map<String, dynamic> _list = widget.list;
+
   String get _base => '${SessionScope.of(context).familyPath}/shopping';
 
   @override
@@ -451,6 +592,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     super.initState();
     _search.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _remember();
       _load();
       listenLive(const {'shopping'}, () {
         if (!_paused) _load();
@@ -476,7 +618,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     final base = _base;
     try {
       final results = await Future.wait([
-        api.get('$base/lists/${widget.list['id']}/items'),
+        api.get('$base/lists/${_list['id']}/items'),
         if (articles || _articles == null) api.get('$base/articles'),
       ]);
       if (!mounted) return;
@@ -520,7 +662,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       }
     });
     final session = SessionScope.of(context);
-    await guarded(context, () => session.api.post('$_base/lists/${widget.list['id']}/items', {'name': name}));
+    await guarded(context, () => session.api.post('$_base/lists/${_list['id']}/items', {'name': name}));
     await _load(articles: false);
   }
 
@@ -565,7 +707,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
         builder: (_) => _ArticleScreen(
           article: _articleOf(name),
           item: _itemOf(name),
-          list: widget.list,
+          list: _list,
           lists: lists,
           articles: _articles?.values ?? catalogArticles.values,
         ),
@@ -586,11 +728,27 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
 
   @override
   Widget build(BuildContext context) {
-    final color = _listColor(context, widget.list);
+    final color = _listColor(context, _list);
     final articles = _articles;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.list['name'] as String),
+        title: Text(_list['name'] as String),
+        actions: [
+          if (_list['can_edit'] == true)
+            IconButton(
+              key: const Key('shopping-edit-list'),
+              tooltip: 'Liste bearbeiten',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: _editList,
+            ),
+          IconButton(
+            key: const Key('shopping-all-lists'),
+            tooltip: 'Alle Einkaufslisten',
+            icon: const Icon(Icons.format_list_bulleted),
+            onPressed: widget.onShowLists ?? () => Navigator.of(context).pop(),
+          ),
+          const SizedBox(width: 4),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(4),
           child: Container(height: 4, color: color),
@@ -705,8 +863,36 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     );
   }
 
+  /// Tells the server this list was open last, for Einkaufen to come back to it.
+  Future<void> _remember() async {
+    final session = SessionScope.of(context);
+    try {
+      await session.api.put('$_base/last', {'list_id': _list['id']});
+    } on ApiException {
+      // Next time the overview comes first; nothing lost.
+    }
+  }
+
+  Future<void> _editList() async {
+    final session = SessionScope.of(context);
+    final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(builder: (_) => _ListFormScreen(list: _list)));
+    if (saved != true || !mounted) return;
+    List<dynamic>? lists;
+    await guarded(context, () async {
+      lists = await session.api.get('$_base/lists') as List;
+    });
+    if (!mounted || lists == null) return;
+    final updated = lists!.cast<Map<String, dynamic>>().where((l) => l['id'] == _list['id']).firstOrNull;
+    if (updated == null) {
+      // Deleted, or no longer visible: back to all lists.
+      (widget.onShowLists ?? () => Navigator.of(context).pop())();
+      return;
+    }
+    setState(() => _list = updated);
+  }
+
   /// Visible to everyone, but not for this user: looking only.
-  bool get _readOnly => widget.list['can_write'] == false;
+  bool get _readOnly => _list['can_write'] == false;
 
   static const _readOnlyHint = 'Diese Liste kannst du nur ansehen. Ändern können sie die Personen, die sie betrifft.';
 
@@ -804,10 +990,26 @@ class _Tiles extends StatelessWidget {
 
   final List<Widget> children;
 
+  static const _spacing = 8.0;
+
+  /// The block is as wide as the columns that fit and stands in the middle, so that
+  /// what is left over is shared between left and right. A last row that is not full
+  /// still starts on the left of the block, in line with the ones above.
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 4),
-    child: Wrap(spacing: 8, runSpacing: 8, children: children),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        const step = _ArticleTile.width + _spacing;
+        final columns = ((constraints.maxWidth + _spacing) / step).floor().clamp(1, 1000);
+        return Center(
+          child: SizedBox(
+            width: columns * step - _spacing,
+            child: Wrap(spacing: _spacing, runSpacing: _spacing, children: children),
+          ),
+        );
+      },
+    ),
   );
 }
 
@@ -820,6 +1022,8 @@ const _addBackgroundDark = Color(0xFFA9D48F);
 const _addForeground = Color(0xFF173A0C);
 
 class _ArticleTile extends StatelessWidget {
+  static const width = 120.0;
+
   const _ArticleTile({
     super.key,
     required this.name,
@@ -851,8 +1055,8 @@ class _ArticleTile extends StatelessWidget {
     final background = onList ? _onListBackground : (dark ? _addBackgroundDark : _addBackground);
     final foreground = onList ? _onListForeground : _addForeground;
     return SizedBox(
-      width: 92,
-      height: 100,
+      width: width,
+      height: 128,
       child: Material(
         color: background,
         borderRadius: BorderRadius.circular(12),
@@ -864,13 +1068,13 @@ class _ArticleTile extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(4, 8, 4, 6),
+                padding: const EdgeInsets.fromLTRB(6, 10, 6, 8),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    ArticleIcon(icon: icon, name: name, size: 44, color: foreground),
-                    const SizedBox(height: 6),
+                    ArticleIcon(icon: icon, name: name, size: 60, color: foreground),
+                    const SizedBox(height: 8),
                     Text(
                       name,
                       maxLines: detail.isEmpty ? 2 : 1,
@@ -878,7 +1082,7 @@ class _ArticleTile extends StatelessWidget {
                       textAlign: TextAlign.center,
                       style: Theme.of(
                         context,
-                      ).textTheme.labelMedium?.copyWith(color: foreground, height: 1.15, fontWeight: FontWeight.w600),
+                      ).textTheme.titleSmall?.copyWith(color: foreground, height: 1.15, fontWeight: FontWeight.w600),
                     ),
                     if (detail.isNotEmpty)
                       Text(
@@ -888,23 +1092,23 @@ class _ArticleTile extends StatelessWidget {
                         textAlign: TextAlign.center,
                         style: Theme.of(
                           context,
-                        ).textTheme.labelSmall?.copyWith(color: foreground.withValues(alpha: 0.85)),
+                        ).textTheme.labelMedium?.copyWith(color: foreground.withValues(alpha: 0.85)),
                       ),
                   ],
                 ),
               ),
               if (badge != null)
                 Positioned(
-                  top: 4,
-                  right: 4,
+                  top: 6,
+                  right: 6,
                   child: Container(
-                    padding: const EdgeInsets.all(2),
+                    padding: const EdgeInsets.all(3),
                     decoration: BoxDecoration(color: badgeColor ?? _addForeground, shape: BoxShape.circle),
-                    child: Icon(badge, size: 14, color: Colors.white),
+                    child: Icon(badge, size: 18, color: Colors.white),
                   ),
                 ),
               if (hasPhotos)
-                Positioned(top: 4, left: 4, child: Icon(Icons.photo_camera_outlined, size: 14, color: foreground)),
+                Positioned(top: 6, left: 4, child: Icon(Icons.photo_camera_outlined, size: 18, color: foreground)),
             ],
           ),
         ),

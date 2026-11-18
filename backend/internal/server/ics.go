@@ -755,6 +755,15 @@ func (s *Server) sharedEntries(r *http.Request) ([]icsEntry, string, error) {
 			date := day(row["due_date"].(string))
 			out = append(out, icsEntry{uid: row["id"].(string), title: row["title"].(string), description: row["note"].(string), start: date, end: date, allDay: true})
 		}
+		lists, err := s.dueShoppingLists(ctx, c, "0000-01-01", "9999-12-31")
+		if err != nil {
+			return nil, "", err
+		}
+		for _, list := range lists {
+			date := day(list["due_date"].(string))
+			out = append(out, icsEntry{uid: "shopping-" + list["id"].(string), title: shoppingListEntryTitle(list),
+				description: shoppingListEntryNote(list), start: date, end: date, allDay: true})
+		}
 		return out, familyName + " Aufgaben", nil
 	case "birthdays":
 		members, err := queryRows(ctx, s.db,

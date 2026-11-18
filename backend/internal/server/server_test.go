@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -47,13 +48,15 @@ type testEnv struct {
 	srv    *httptest.Server
 	mailer *fakeMailer
 	server *Server
+	files  *keyedStore
 }
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
 	mailer := &fakeMailer{}
+	files := &keyedStore{Store: testFiles(t), keys: map[string]string{}}
 	s, err := New(t.Context(), Config{
-		DB: testDatabase(t), Files: testFiles(t), Mailer: mailer, PublicURL: "http://test", CORSOrigin: "*",
+		DB: testDatabase(t), Files: files, Mailer: mailer, PublicURL: "http://test", CORSOrigin: "*",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +69,7 @@ func newEnv(t *testing.T) *testEnv {
 	s.holidaysURL = holidays.URL
 	srv := httptest.NewServer(s.routes())
 	t.Cleanup(srv.Close)
-	return &testEnv{t, srv, mailer, s}
+	return &testEnv{t, srv, mailer, s, files}
 }
 
 func TestVersionNeedsNoLogin(t *testing.T) {
@@ -176,10 +179,34 @@ func testFiles(t *testing.T) storage.Store {
 	return files
 }
 
+// keyedStore remembers under which key each file went in, for tests that only know its id.
+type keyedStore struct {
+	storage.Store
+	mu   sync.Mutex
+	keys map[string]string // by the last part of the key, the id
+}
+
+func (k *keyedStore) Put(ctx context.Context, key string, content io.Reader, contentType string) (int64, error) {
+	k.mu.Lock()
+	k.keys[path.Base(key)] = key
+	k.mu.Unlock()
+	return k.Store.Put(ctx, key, content, contentType)
+}
+
+// keyOf returns the key a file went in under, or the id if it never did.
+func (k *keyedStore) keyOf(id string) string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if key, ok := k.keys[id]; ok {
+		return key
+	}
+	return id
+}
+
 // fileStored says whether the file itself is there, whatever the database says.
 func (e *testEnv) fileStored(id string) bool {
 	e.t.Helper()
-	content, _, err := e.server.files.Get(context.Background(), id)
+	content, _, err := e.server.files.Get(context.Background(), e.files.keyOf(id))
 	if errors.Is(err, storage.ErrNotFound) {
 		return false
 	}

@@ -111,3 +111,32 @@ func TestS3ChecksItsSettings(t *testing.T) {
 		t.Error("endpoint without a scheme")
 	}
 }
+
+func TestLocalFolders(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Put(ctx, "kreis/datei", strings.NewReader("inhalt"), "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir + "/kreis/datei"); err != nil {
+		t.Fatalf("not in the folder of the family: %v", err)
+	}
+	if reader, _, err := store.Get(ctx, "kreis/datei"); err != nil {
+		t.Fatal(err)
+	} else {
+		reader.Close()
+	}
+	// Nothing reaches above the directory.
+	for _, key := range []string{"../datei", "kreis/..", "kreis//datei", "/datei"} {
+		if _, err := store.Put(ctx, key, strings.NewReader("x"), "text/plain"); err == nil {
+			t.Errorf("%q was taken", key)
+		}
+	}
+	if err := store.Delete(ctx, "kreis/datei"); err != nil {
+		t.Fatal(err)
+	}
+}

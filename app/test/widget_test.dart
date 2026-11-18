@@ -491,6 +491,11 @@ class FakeBackend {
         response = shoppingLists;
       case '/api/families/f1/shopping/lists/s1/items' when request.method == 'GET':
         response = shoppingItems;
+      case '/api/families/f1/shopping/last' when request.method == 'GET':
+        response = {'list_id': shoppingLast};
+      case '/api/families/f1/shopping/last':
+        shoppingLast = (body as Map)['list_id'] as String;
+        response = null;
       case '/api/families/f1/shopping/articles' when request.method == 'GET':
         response = shoppingArticles;
       case final path when path.startsWith('/api/families/f1/shopping/'):
@@ -540,6 +545,9 @@ class FakeBackend {
     {'id': 'i2', 'name': 'Brot', 'amount': '', 'note': '', 'urgency': '', 'done': true, 'photo_ids': <String>[]},
   ];
   List<Map<String, Object?>> shoppingArticles = [];
+
+  /// The list opened last, as GET shopping/last tells it; empty for none.
+  String shoppingLast = '';
 
   int activitiesUnread = 0;
   List<Map<String, Object?>> upcoming = [];
@@ -4116,6 +4124,29 @@ void calendarTests() {
         await disposeApp(tester);
       });
     }
+
+    testWidgets('eine fällige Einkaufsliste öffnet sich aus dem Kalender, zurück geht in den Kalender', (tester) async {
+      final backend = FakeBackend();
+      final now = DateTime.now();
+      backend.eventRows = [
+        {
+          ..._entry('Einkaufen: Wocheneinkauf', DateTime(now.year, now.month, now.day), editable: false, allDay: true),
+          'id': 'tasks:shopping:s1',
+          'source': 'tasks',
+          'shopping_list_id': 's1',
+        },
+      ];
+      await _openCalendar(tester, backend);
+      await tester.tap(find.text('Einkaufen: Wocheneinkauf'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      expect(find.text('Wocheneinkauf'), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Einkaufen: Wocheneinkauf'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await disposeApp(tester);
+    });
 
     testWidgets('Monat zeigt Titel, Tag antippen öffnet die Tagesansicht', (tester) async {
       final backend = FakeBackend();

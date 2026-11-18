@@ -550,7 +550,7 @@ func (s *Server) cleanupEvents(ctx context.Context) {
 			continue
 		}
 		for _, file := range files {
-			s.removeStoredFile(nil, file["id"].(string))
+			s.removeStoredFile(nil, fileKey(id, file["id"].(string)))
 		}
 	}
 }
@@ -825,6 +825,19 @@ func (s *Server) calendarEntries(w http.ResponseWriter, r *http.Request, c reqCt
 			for _, item := range items {
 				date := item["due_date"].(string)
 				entries = append(entries, allDayEntry(cal, item["id"].(string), item["title"].(string), item["note"].(string), date, date))
+			}
+			lists, err := s.dueShoppingLists(ctx, c, span.firstDay, span.lastDay)
+			if err != nil {
+				return err
+			}
+			for _, list := range lists {
+				date := list["due_date"].(string)
+				entry := allDayEntry(cal, "shopping:"+list["id"].(string), shoppingListEntryTitle(list), shoppingListEntryNote(list), date, date)
+				if color := list["category_color"].(string); color != "" {
+					entry["color"] = color
+				}
+				entry["shopping_list_id"] = list["id"]
+				entries = append(entries, entry)
 			}
 		case "birthdays":
 			members, err := queryRows(ctx, s.db,

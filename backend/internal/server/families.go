@@ -360,7 +360,7 @@ func (s *Server) leaveFamily(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	switch {
 	case in.DeleteData && alone:
 		// Nobody is left whom anything could still be for.
-		if files, err = fileIDs(ctx, tx, `SELECT id FROM files WHERE family_id = ?`, c.familyID); err != nil {
+		if files, err = fileIDs(ctx, tx, `SELECT id, family_id FROM files WHERE family_id = ?`, c.familyID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM families WHERE id = ?`, c.familyID); err != nil {
@@ -393,6 +393,7 @@ func (s *Server) leaveFamily(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	return noContent(w)
 }
 
+// fileIDs returns the storage keys of the files the query selects with id and family_id.
 func fileIDs(ctx context.Context, q dbtx, query string, args ...any) ([]string, error) {
 	rows, err := queryRows(ctx, q, query, args...)
 	if err != nil {
@@ -400,7 +401,7 @@ func fileIDs(ctx context.Context, q dbtx, query string, args ...any) ([]string, 
 	}
 	ids := []string{}
 	for _, row := range rows {
-		ids = append(ids, row["id"].(string))
+		ids = append(ids, fileKey(row["family_id"].(string), row["id"].(string)))
 	}
 	return ids, nil
 }
@@ -412,7 +413,7 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 	const ownEvents = `SELECT e.id FROM events e WHERE e.family_id = ?1 AND e.created_by = ?2 AND e.visibility = 'participants' AND e.participants_all = 0
 		AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = e.id AND p.user_id <> ?2)`
 	files, err := fileIDs(ctx, tx,
-		`SELECT id FROM files WHERE family_id = ?1 AND (uploaded_by = ?2 OR event_id IN (`+ownEvents+`))`, familyID, userID)
+		`SELECT id, family_id FROM files WHERE family_id = ?1 AND (uploaded_by = ?2 OR event_id IN (`+ownEvents+`))`, familyID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +446,7 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 	// must never become visible to everyone.
 	const abandoned = `FROM events e WHERE e.family_id = ?1 AND e.participants_all = 0 AND e.visibility = 'participants'
 		AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = e.id)`
-	orphans, err := fileIDs(ctx, tx, `SELECT id FROM files WHERE event_id IN (SELECT e.id `+abandoned+` AND e.created_by IS NULL)`, familyID)
+	orphans, err := fileIDs(ctx, tx, `SELECT id, family_id FROM files WHERE event_id IN (SELECT e.id `+abandoned+` AND e.created_by IS NULL)`, familyID)
 	if err != nil {
 		return nil, err
 	}

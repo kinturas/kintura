@@ -9,6 +9,7 @@ import 'calendar_manage_screen.dart';
 import 'calendar_views.dart';
 import 'event_detail_screen.dart';
 import 'event_edit_screen.dart';
+import 'shopping_screen.dart';
 
 /// The layouts; the names are what the backend stores.
 const _viewLabels = {'agenda': 'Tagebuch', 'day': 'Tag', 'three': '3 Tage', 'week': 'Woche', 'month': 'Monat'};
@@ -77,7 +78,7 @@ class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
     if (!mounted) return;
     setState(() => _prefsLoaded = true);
     // Events others add or change show up without asking.
-    listenLive(const {'calendar'}, _load);
+    listenLive(const {'calendar', 'shopping'}, _load);
     await _load();
   }
 
@@ -182,8 +183,14 @@ class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
     if (changed == true) _load();
   }
 
-  void _open(CalendarEntry entry) {
-    Navigator.of(context).push<void>(
+  Future<void> _open(CalendarEntry entry) async {
+    // A shopping list with a due date opens as itself; back comes here again.
+    if (entry.raw['shopping_list_id'] case final String listId) {
+      await Navigator.of(context).push<void>(MaterialPageRoute(builder: (_) => ShoppingScreen(listId: listId)));
+      if (mounted) await _load();
+      return;
+    }
+    await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => EventDetailScreen(
           entry: entry,

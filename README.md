@@ -161,6 +161,10 @@ HTTPS-Reverse-Proxy. Zur Sicherung `DATA_DIR` kopieren, bei Postgres und S3 die 
 Dateien laufen immer durch das Backend, das auch die Rechte prüft. Der Bucket muss also nicht öffentlich sein und sollte es
 auch nicht. Beim Start prüft das Backend den Zugriff auf Datenbank und Bucket und bricht bei einer falschen Einstellung ab.
 
+Jede Datei liegt im Ordner ihres Kreises: `<Kreis-ID>/<Datei-ID>`, lokal also `DATA_DIR/files/<Kreis-ID>/<Datei-ID>`, im
+Bucket unter `S3_PREFIX<Kreis-ID>/<Datei-ID>`. Ältere Dateien ohne Ordner findet das Backend nicht mehr; sie müssen in
+den Ordner ihres Kreises verschoben werden (`family_id` und `id` der Tabelle `files`).
+
 ## Backend-Struktur
 
 | Ordner | Inhalt |
@@ -374,8 +378,18 @@ Anlegen und Bearbeiten sofort die Farbe, die der Termin mit der aktuellen Auswah
 
 ## Einkaufen
 
-Die Kachel „Einkaufen“ zeigt die Einkaufslisten, die man sehen darf, und am Ende einen Knopf für eine neue. Unter „Listen“
-gibt es nur noch Aufgabenlisten; das Backend nimmt dort keine neuen Einkaufslisten mehr an.
+Die Kachel „Einkaufen“ öffnet direkt die zuletzt geöffnete Liste (`GET/PUT …/shopping/last`, je Person und Kreis).
+Gibt es keine oder sieht man sie nicht mehr, kommen die Einkaufslisten, die man sehen darf, mit einem Knopf für eine
+neue am Ende. In einer Liste führt oben rechts das Listen-Symbol zu allen Listen, links daneben der Stift zum Bearbeiten
+(für Ersteller, Manager und Admins). „Zurück“ aus einer Liste geht aufs Dashboard, aus allen Listen in die Liste, aus der
+man kam (aufs Dashboard nur, wenn man noch keine gewählt hat). Aus dem Kalender und aus Aktuelles öffnet sich dieselbe
+Seite mit der Liste; „Zurück“ führt dann dorthin zurück. Unter „Listen“ gibt es nur noch Aufgabenlisten; das Backend
+nimmt dort keine neuen Einkaufslisten mehr an.
+
+- **Kategorie und Fälligkeit:** optional, die Kategorien sind die des Kalenders (eine benutzte Kategorie lässt sich
+  nicht löschen). Eine Liste mit Datum steht im Kalender „Geplante Aufgaben“ als ganztägiger Eintrag „Einkaufen: Name“
+  in der Farbe der Kategorie, mit der Zahl der offenen Artikel, auch im Kalender-Abo. Sichtbar nur für wen die Liste
+  sichtbar ist.
 
 - **Liste:** Name, Farbe aus der Farbtabelle des Kreises, „Betrifft“ (alle oder einzelne Mitglieder) und „Sichtbar für“.
   Vorgabe ist „Zugeteilte und Ersteller“: nur sie sehen die Liste. „Jeden (lesend)“ zeigt sie allen im Kreis, die

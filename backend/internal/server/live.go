@@ -105,6 +105,10 @@ func liveTopic(path string) string {
 	}
 	switch segment {
 	case "shopping":
+		// Which list one had open last is one's own business.
+		if len(parts) > 2 && parts[2] == "last" {
+			return ""
+		}
 		return "shopping"
 	case "events", "calendars", "categories", "attachments":
 		return "calendar"

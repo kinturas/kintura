@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/png"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -216,4 +217,88 @@ func TestShoppingArticles(t *testing.T) {
 	// Only own articles can be deleted.
 	e.expect(404, "DELETE", base+"?name=Milch", token, nil)
 	e.expect(204, "DELETE", base+"?name="+url.QueryEscape("Übertopf"), token, nil)
+}
+
+func TestShoppingListDetailsAndCalendar(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "A", "F")
+	fid := e.firstFamily(owner)
+	other, otherID := e.addMember(fid, owner, "b@example.de")
+	_ = otherID
+	base := "/api/families/" + fid
+	category := e.expect(201, "POST", base+"/categories", owner, obj{"name": "Feier", "color": "#D32F2F"})["id"].(string)
+
+	e.expect(400, "POST", base+"/shopping/lists", owner, obj{"name": "X", "category_id": "nix"})
+	e.expect(400, "POST", base+"/shopping/lists", owner, obj{"name": "X", "due_date": "31.12.2026"})
+	party := e.expect(201, "POST", base+"/shopping/lists", owner, obj{
+		"name": "Geburtstag", "category_id": category, "due_date": "2026-12-05", "assignees_all": false,
+		"assignee_ids": []string{e.expect(200, "GET", "/api/me", owner, nil)["id"].(string)},
+	})["id"].(string)
+	e.expect(201, "POST", base+"/shopping/lists/"+party+"/items", owner, obj{"name": "Kerzen"})
+	lists := e.shoppingLists(owner, fid)
+	if len(lists) != 1 || lists[0]["category_id"] != category || lists[0]["category_name"] != "Feier" ||
+		lists[0]["category_color"] != "#D32F2F" || lists[0]["due_date"] != "2026-12-05" {
+		t.Fatalf("lists: %v", lists)
+	}
+
+	// In "Geplante Aufgaben", in the color of the category, for those who see the list.
+	var entry obj
+	for _, candidate := range e.entries(owner, fid, "2026-12-01T00:00:00Z", "2026-12-31T00:00:00Z") {
+		if candidate["shopping_list_id"] == party {
+			entry = candidate
+		}
+	}
+	if entry == nil || entry["title"] != "Einkaufen: Geburtstag" || entry["start_local"] != "2026-12-05T00:00" ||
+		entry["color"] != "#D32F2F" || entry["description"] != "Einkaufsliste, 1 Artikel offen · Feier" {
+		t.Fatalf("entry: %v", entry)
+	}
+	for _, candidate := range e.entries(other, fid, "2026-12-01T00:00:00Z", "2026-12-31T00:00:00Z") {
+		if candidate["shopping_list_id"] == party {
+			t.Fatalf("private list in the calendar of someone else: %v", candidate)
+		}
+	}
+	feed := e.expect(201, "POST", base+"/calendars/tasks/share", owner, nil)["url"].(string)
+	if status, ics := e.getRaw(strings.TrimPrefix(feed, "http://test"), ""); status != 200 || !strings.Contains(ics, "SUMMARY:Einkaufen: Geburtstag") {
+		t.Fatalf("ics: %d\n%s", status, ics)
+	}
+
+	// A category in use stays; without the date the list leaves the calendar.
+	e.expect(409, "DELETE", base+"/categories/"+category, owner, nil)
+	e.expect(204, "PUT", base+"/shopping/lists/"+party, owner, obj{"name": "Geburtstag"})
+	if lists := e.shoppingLists(owner, fid); lists[0]["due_date"] != "" || lists[0]["category_id"] != "" {
+		t.Fatalf("cleared: %v", lists)
+	}
+	for _, candidate := range e.entries(owner, fid, "2026-12-01T00:00:00Z", "2026-12-31T00:00:00Z") {
+		if candidate["shopping_list_id"] == party {
+			t.Fatalf("still in the calendar: %v", candidate)
+		}
+	}
+	e.expect(204, "DELETE", base+"/categories/"+category, owner, nil)
+}
+
+func TestLastShoppingList(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "A", "F")
+	fid := e.firstFamily(owner)
+	other, _ := e.addMember(fid, owner, "b@example.de")
+	base := "/api/families/" + fid + "/shopping"
+
+	if last := e.expect(200, "GET", base+"/last", owner, nil)["list_id"]; last != "" {
+		t.Fatalf("before: %v", last)
+	}
+	ownerID := e.expect(200, "GET", "/api/me", owner, nil)["id"].(string)
+	private := e.expect(201, "POST", base+"/lists", owner, obj{"name": "Meins", "assignees_all": false, "assignee_ids": []string{ownerID}})["id"].(string)
+	e.expect(204, "PUT", base+"/last", owner, obj{"list_id": private})
+	if last := e.expect(200, "GET", base+"/last", owner, nil)["list_id"]; last != private {
+		t.Fatalf("after: %v", last)
+	}
+	// Only lists one sees, and each their own.
+	e.expect(404, "PUT", base+"/last", other, obj{"list_id": private})
+	if last := e.expect(200, "GET", base+"/last", other, nil)["list_id"]; last != "" {
+		t.Fatalf("other: %v", last)
+	}
+	e.expect(204, "DELETE", base+"/lists/"+private, owner, nil)
+	if last := e.expect(200, "GET", base+"/last", owner, nil)["list_id"]; last != "" {
+		t.Fatalf("deleted: %v", last)
+	}
 }

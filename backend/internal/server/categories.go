@@ -24,7 +24,8 @@ func insertInitialCategories(ctx context.Context, q dbtx, familyID string) error
 
 func (s *Server) listCategories(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	categories, err := queryRows(r.Context(), s.db,
-		`SELECT id, name, color, EXISTS (SELECT 1 FROM events e WHERE e.category_id = categories.id) AS used
+		`SELECT id, name, color, (EXISTS (SELECT 1 FROM events e WHERE e.category_id = categories.id)
+			OR EXISTS (SELECT 1 FROM shopping_lists l WHERE l.category_id = categories.id)) AS used
 		 FROM categories WHERE family_id = ? ORDER BY position`, c.familyID)
 	if err != nil {
 		return err
@@ -97,12 +98,13 @@ func (s *Server) updateCategory(w http.ResponseWriter, r *http.Request, c reqCtx
 // deleteCategory only removes categories that no event uses.
 func (s *Server) deleteCategory(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	var used bool
-	if err := s.db.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM events WHERE category_id = ? AND family_id = ?)`,
+	if err := s.db.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM events WHERE category_id = ?1 AND family_id = ?2)
+		 OR EXISTS (SELECT 1 FROM shopping_lists WHERE category_id = ?1 AND family_id = ?2)`,
 		r.PathValue("id"), c.familyID).Scan(&used); err != nil {
 		return err
 	}
 	if used {
-		return fail(http.StatusConflict, "Diese Kategorie wird noch von Terminen verwendet.")
+		return fail(http.StatusConflict, "Diese Kategorie wird noch von Terminen oder Einkaufslisten verwendet.")
 	}
 	res, err := s.db.ExecContext(r.Context(), `DELETE FROM categories WHERE id = ? AND family_id = ?`, r.PathValue("id"), c.familyID)
 	if err := requireAffected(res, err); err != nil {

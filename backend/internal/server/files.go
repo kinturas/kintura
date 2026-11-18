@@ -80,14 +80,15 @@ func (s *Server) storeUpload(w http.ResponseWriter, r *http.Request, c reqCtx, k
 
 	id := newID()
 	ctx := r.Context()
-	size, err := s.files.Put(ctx, id, io.MultiReader(bytes.NewReader(head), part), contentType)
+	key := fileKey(c.familyID, id)
+	size, err := s.files.Put(ctx, key, io.MultiReader(bytes.NewReader(head), part), contentType)
 	if err != nil {
 		return err
 	}
 	stored := false
 	defer func() {
 		if !stored {
-			s.files.Delete(context.WithoutCancel(ctx), id)
+			s.files.Delete(context.WithoutCancel(ctx), key)
 		}
 	}()
 	if _, err := s.db.ExecContext(ctx,
@@ -101,8 +102,8 @@ func (s *Server) storeUpload(w http.ResponseWriter, r *http.Request, c reqCtx, k
 }
 
 // serveFile sends a stored file. nosniff keeps browsers from executing uploads.
-func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, id, name, contentType, disposition string) error {
-	f, size, err := s.files.Get(r.Context(), id)
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, key, name, contentType, disposition string) error {
+	f, size, err := s.files.Get(r.Context(), key)
 	if err != nil {
 		return err
 	}
@@ -126,7 +127,7 @@ func (s *Server) fileContent(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	if err != nil {
 		return err
 	}
-	return s.serveFile(w, r, id, name, contentType, "attachment")
+	return s.serveFile(w, r, fileKey(c.familyID, id), name, contentType, "attachment")
 }
 
 // fileLink creates a short-lived URL the system browser can open without the
@@ -156,15 +157,15 @@ func (s *Server) writeDownloadLink(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	var id, name, contentType string
+	var id, familyID, name, contentType string
 	err := s.db.QueryRowContext(r.Context(),
-		`SELECT f.id, f.name, f.mime FROM download_tokens t JOIN files f ON f.id = t.file_id
-		 WHERE t.token_hash = ? AND t.expires_at > ?`, hashToken(r.PathValue("token")), now()).Scan(&id, &name, &contentType)
+		`SELECT f.id, f.family_id, f.name, f.mime FROM download_tokens t JOIN files f ON f.id = t.file_id
+		 WHERE t.token_hash = ? AND t.expires_at > ?`, hashToken(r.PathValue("token")), now()).Scan(&id, &familyID, &name, &contentType)
 	if err != nil {
 		http.Error(w, "Link ungültig oder abgelaufen", http.StatusGone)
 		return
 	}
-	if err := s.serveFile(w, r, id, name, contentType, "attachment"); err != nil {
+	if err := s.serveFile(w, r, fileKey(familyID, id), name, contentType, "attachment"); err != nil {
 		s.logError(r, http.StatusInternalServerError, "Download: "+err.Error())
 	}
 }
@@ -179,16 +180,20 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request, c reqCtx) er
 	if err != nil {
 		return err
 	}
-	return s.removeFile(w, r, id)
+	return s.removeFile(w, r, c.familyID, id)
 }
 
-func (s *Server) removeFile(w http.ResponseWriter, r *http.Request, id string) error {
+func (s *Server) removeFile(w http.ResponseWriter, r *http.Request, familyID, id string) error {
 	res, err := s.db.ExecContext(r.Context(), `DELETE FROM files WHERE id = ?`, id)
 	if err := requireAffected(res, err); err != nil {
 		return err
 	}
-	if err := s.files.Delete(context.WithoutCancel(r.Context()), id); err != nil {
+	if err := s.files.Delete(context.WithoutCancel(r.Context()), fileKey(familyID, id)); err != nil {
 		s.logError(r, http.StatusInternalServerError, "Datei löschen: "+err.Error())
 	}
 	return noContent(w)
 }
+
+// fileKey is where a file lies in the storage: in a folder of its family, named by its id.
+// Files stored before that lie without the folder and are not found until moved into it.
+func fileKey(familyID, id string) string { return familyID + "/" + id }

@@ -79,6 +79,8 @@ void main() {
         'assignees_all': false,
         'assignee_ids': ['u2'],
         'visibility': 'participants',
+        'category_id': '',
+        'due_date': '',
       });
       expect(tester.takeException(), isNull);
       await disposeApp(tester);
@@ -292,6 +294,87 @@ void main() {
       expect(backend.writes, isEmpty);
       expect(find.byKey(const Key('article-detail')), findsNothing);
       expect(find.textContaining('Diese Liste kannst du nur ansehen.'), findsWidgets);
+      await disposeApp(tester);
+    });
+
+    testWidgets('zurück: aus der Liste aufs Dashboard, aus allen Listen in die Liste', (tester) async {
+      final backend = FakeBackend();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      // Never chosen one: all lists, and back from there is the dashboard.
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-new-list')), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Hallo Anna'), findsOneWidget);
+
+      // Chosen from all lists: back from the list is the dashboard, not all lists.
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Wocheneinkauf'));
+      await tester.pumpAndSettle();
+      expect(backend.shoppingLast, 's1');
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Hallo Anna'), findsOneWidget);
+
+      // From now on straight into the list; all lists and back is the list again.
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('shopping-all-lists')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-new-list')), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Hallo Anna'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await disposeApp(tester);
+    });
+
+    testWidgets('in der Liste lässt sie sich bearbeiten, mit Kategorie und Fälligkeit', (tester) async {
+      final backend = FakeBackend()..shoppingLast = 's1';
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      final edit = find.byKey(const Key('shopping-edit-list'));
+      final all = find.byKey(const Key('shopping-all-lists'));
+      // Edit left of the button for all lists.
+      expect(tester.getCenter(edit).dx, lessThan(tester.getCenter(all).dx));
+
+      await tester.tap(edit);
+      await tester.pumpAndSettle();
+      expect(find.text('Kategorie'), findsOneWidget);
+      expect(find.text('Fällig am'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('shopping-list-category')));
+      await tester.pumpAndSettle();
+      final category = find.byType(DropdownMenuItem<String>).last;
+      final name = tester.widget<Text>(find.descendant(of: category, matching: find.byType(Text)).last).data;
+      await tester.tap(category);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Speichern'));
+      await tester.pumpAndSettle();
+      final body = backend.writes['PUT lists/s1'] as Map;
+      expect(body['category_id'], isNotEmpty, reason: name);
+      expect(body['due_date'], '');
+      // Back in the list.
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ohne Bearbeitungsrecht kein Stift', (tester) async {
+      final backend = FakeBackend()..shoppingLast = 's1';
+      backend.shoppingLists.first['can_edit'] = false;
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-edit-list')), findsNothing);
+      expect(find.byKey(const Key('shopping-all-lists')), findsOneWidget);
       await disposeApp(tester);
     });
   });

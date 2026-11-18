@@ -270,6 +270,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/families/{fid}/shopping/items/{id}/photos", s.member(s.uploadShoppingPhoto))
 	mux.Handle("GET /api/families/{fid}/shopping/photos/{id}", s.member(s.getShoppingPhoto))
 	mux.Handle("DELETE /api/families/{fid}/shopping/photos/{id}", s.member(s.deleteShoppingPhoto))
+	mux.Handle("GET /api/families/{fid}/shopping/last", s.member(s.lastShoppingList))
+	mux.Handle("PUT /api/families/{fid}/shopping/last", s.member(s.setLastShoppingList))
 	mux.Handle("GET /api/families/{fid}/shopping/articles", s.member(s.listShoppingArticles))
 	mux.Handle("POST /api/families/{fid}/shopping/articles", s.member(s.createShoppingArticle))
 	mux.Handle("PUT /api/families/{fid}/shopping/articles", s.member(s.putShoppingArticle))
