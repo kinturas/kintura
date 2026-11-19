@@ -147,6 +147,10 @@ jobs:
     if: >-
       !cancelled() && !contains(needs.*.result, 'failure') && !startsWith(github.ref_name, 'web-v')
     runs-on: ubuntu-latest
+    # One build at a time; a waiting one replaces an older waiting one, both push :latest.
+    concurrency:
+      group: website
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -155,6 +159,12 @@ jobs:
       REPO_URL: ${{ vars.REPO_URL || format('{0}/{1}', github.server_url, github.repository) }}
     steps:
       - uses: actions/checkout@v7
+      # releases.json from main, not from this tag: a release built late, say re-run after
+      # a failure, would otherwise drop the builds tagged after it from the downloads.
+      - name: Aktuelle releases.json von main
+        run: |
+          git fetch --depth=1 origin main
+          git checkout FETCH_HEAD -- website/public/releases.json
       - name: Repository-Variablen prüfen
         run: |
           if [ -z "$APP_URL" ]; then

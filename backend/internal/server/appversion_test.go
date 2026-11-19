@@ -83,3 +83,31 @@ func TestAppTooOldIsTurnedAway(t *testing.T) {
 		t.Fatalf("version: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestAPIIsNeverCached(t *testing.T) {
+	e := newEnv(t)
+	token := e.register("a@example.de", "A", "F")
+
+	get := func(path, token string) string {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		e.server.Handler().ServeHTTP(rec, req)
+		return rec.Header().Get("Cache-Control")
+	}
+	fid := e.firstFamily(token)
+	for _, path := range []string{"/api/me", "/api/families/" + fid + "/members"} {
+		if got := get(path, token); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q", path, got)
+		}
+	}
+	// Errors too, and the version the apps compare against.
+	if got := get("/api/me", ""); got != "no-store" {
+		t.Errorf("401: Cache-Control %q", got)
+	}
+	if got := get("/api/version", ""); got != "no-store" {
+		t.Errorf("version: Cache-Control %q", got)
+	}
+}

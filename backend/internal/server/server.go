@@ -342,7 +342,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /api/admin/pages", s.dashboard(s.adminPages))
 	mux.Handle("PUT /api/admin/pages/{slug}", s.dashboard(s.adminUpdatePage))
 
-	return s.cors(s.requireAppVersion(mux))
+	return s.cors(noStoreAPI(s.requireAppVersion(mux)))
 }
 
 // cors allows the Flutter web build to call the API. Auth uses bearer tokens,
@@ -462,4 +462,16 @@ func normalizeTime(s string) (string, error) {
 		return "", fail(http.StatusBadRequest, "Ungültiger Zeitpunkt")
 	}
 	return t.UTC().Format(timeFormat), nil
+}
+
+// noStoreAPI keeps every API answer out of browser and proxy caches such as Cloudflare,
+// which might otherwise hand one user's data to another. Handlers that may be cached,
+// like photos, set their own Cache-Control afterwards.
+func noStoreAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
