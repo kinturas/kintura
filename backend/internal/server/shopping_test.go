@@ -84,6 +84,18 @@ func TestShoppingItems(t *testing.T) {
 		t.Fatalf("again open: %v", items)
 	}
 
+	// Checking off by name, as the app does, also with what it kept offline: only done
+	// changes, and an article not open stays as it is.
+	e.expect(400, "POST", base+"/lists/"+list+"/items/check", token, obj{"name": " "})
+	e.expect(204, "POST", base+"/lists/"+list+"/items/check", token, obj{"name": "Milch"})
+	e.expect(204, "POST", base+"/lists/"+list+"/items/check", token, obj{"name": "Milch"})
+	e.expect(204, "POST", base+"/lists/"+list+"/items/check", token, obj{"name": "Gibt es nicht"})
+	items = e.shoppingItems(token, fid, list)
+	if itemNames(items) != "Brot,Milch✓" || items[1]["note"] != "laktosefrei" || items[1]["done_at"] == "" {
+		t.Fatalf("checked by name: %v", items)
+	}
+	e.expect(200, "POST", base+"/lists/"+list+"/items", token, obj{"name": "Milch"})
+
 	// Moving takes the photos along and merges into an entry the other list has.
 	var buf bytes.Buffer
 	png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2)))
@@ -154,6 +166,8 @@ func TestShoppingListVisibility(t *testing.T) {
 		t.Fatalf("reader adds: %d %v", status, out)
 	}
 	e.expect(403, "PUT", base+"/items/"+bread, outsider, obj{"done": true})
+	e.expect(403, "POST", base+"/lists/"+open+"/items/check", outsider, obj{"name": "Brot"})
+	e.expect(404, "POST", base+"/lists/"+private+"/items/check", outsider, obj{"name": "Milch"})
 	e.expect(403, "DELETE", base+"/items/"+bread, outsider, nil)
 	e.expect(403, "POST", base+"/items/"+bread+"/photos", outsider, nil)
 

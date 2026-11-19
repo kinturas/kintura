@@ -573,6 +573,11 @@ class FakeBackend {
         final id = 'i${shoppingItems.length + 1}';
         shoppingItems.add({'id': id, 'name': data['name'], 'amount': '', 'note': '', 'urgency': '', 'done': false, 'photo_ids': <String>[]});
         return {'id': id};
+      case ('POST', 'lists/s1/items/check'):
+        for (final item in shoppingItems.where((i) => i['name'] == data['name'])) {
+          item['done'] = true;
+        }
+        return null;
       case ('PUT', final r) when r.startsWith('items/'):
         final item = shoppingItems.firstWhere((i) => i['id'] == r.substring('items/'.length));
         item.addAll({for (final key in ['amount', 'note', 'urgency', 'done']) key: data[key]});

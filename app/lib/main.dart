@@ -9,6 +9,7 @@ import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'session.dart';
 import 'session_sync.dart';
+import 'shopping/shopping_outbox.dart';
 import 'live_updates.dart';
 import 'update_check.dart';
 
@@ -21,7 +22,12 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('de');
   final api = ApiClient(cache: await _openCache());
-  final session = AppSession(api: api, tokens: SecureTokenStore(), themes: SecureThemeStore());
+  final session = AppSession(
+    api: api,
+    tokens: SecureTokenStore(),
+    themes: SecureThemeStore(),
+    shopping: ShoppingOutbox(await _openOutbox()),
+  );
   // Before the first frame, or the app would start in the wrong design.
   await session.loadThemeMode();
   session.start();
@@ -35,6 +41,15 @@ Future<void> main() async {
 Future<ResponseCache?> _openCache() async {
   try {
     return await PrefsResponseCache.open();
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Without storage, shopping offline lasts only until the app closes.
+Future<OutboxStore?> _openOutbox() async {
+  try {
+    return await PrefsOutboxStore.open();
   } catch (_) {
     return null;
   }

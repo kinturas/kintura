@@ -407,7 +407,16 @@ nimmt dort keine neuen Einkaufslisten mehr an.
 - **Kacheln:** grau, wenn der Artikel auf der Liste steht, hellgrün zum Hinzufügen; auf jeder Liste gleich. Die Farbe der
   Liste zeigt nur der Streifen unter der Titelleiste.
 - **Abhaken:** Ein Tipp auf einen Artikel der Liste hakt ihn ab. Er bleibt mit Menge, Beschreibung und Fotos als „Zuletzt
-  verwendet“ an der Liste und kommt mit einem Tipp zurück.
+  verwendet“ an der Liste und kommt mit einem Tipp zurück. Abgehakt wird beim Namen
+  (`POST …/shopping/lists/{id}/items/check`), das ändert nur `done`.
+- **Ohne Internet:** Beim Öffnen von „Einkaufen“ lädt die App alle Listen samt Artikeln und den Katalog auf das Gerät,
+  auch die nie geöffneten. Abhaken, wieder auf die Liste setzen, Artikel aus dem Katalog hinzufügen und eigene Artikel
+  anlegen gehen offline (ein neuer eigener Artikel wird beim Senden zuerst angelegt; gibt es ihn dann schon, gilt er):
+  Die Änderung gilt sofort auf dem Gerät, bleibt auch nach dem Schließen der App gespeichert
+  (`app/lib/shopping/shopping_outbox.dart`) und geht der Reihe nach an den Server, sobald er wieder antwortet. Je Artikel
+  wartet nur die letzte Änderung; sie gilt, auch wenn andere den Artikel inzwischen geändert haben. Lehnt der Server
+  eine ab, etwa weil die Liste gelöscht wurde, fällt sie weg. Die Liste zeigt, wie viele Änderungen noch warten. Listen
+  anlegen oder ändern, Fotos und die Seite eines Artikels (Symbol, Menge, Beschreibung) brauchen weiter eine Verbindung.
 - **Langes Drücken:** öffnet die Seite des Artikels mit einem Feld für Menge und Beschreibung (gespeichert in `amount`,
   `note` bleibt leer), Dringlichkeit (dringend, Angebot, wenn’s passt), Kategorie, Fotos und der Liste, auf der er steht.
   Das Symbol lässt sich nur bei eigenen Artikeln ändern, auf einer eigenen Seite mit Suche über die Namen aller Artikel, die

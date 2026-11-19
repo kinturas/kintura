@@ -265,6 +265,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /api/families/{fid}/shopping/lists/{id}", s.member(s.deleteShoppingList))
 	mux.Handle("GET /api/families/{fid}/shopping/lists/{id}/items", s.member(s.listShoppingItems))
 	mux.Handle("POST /api/families/{fid}/shopping/lists/{id}/items", s.member(s.addShoppingItem))
+	mux.Handle("POST /api/families/{fid}/shopping/lists/{id}/items/check", s.member(s.checkShoppingItem))
 	mux.Handle("PUT /api/families/{fid}/shopping/items/{id}", s.member(s.updateShoppingItem))
 	mux.Handle("DELETE /api/families/{fid}/shopping/items/{id}", s.member(s.deleteShoppingItem))
 	mux.Handle("POST /api/families/{fid}/shopping/items/{id}/photos", s.member(s.uploadShoppingPhoto))

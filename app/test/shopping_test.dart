@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kintura/shopping/shopping_catalog.dart';
+import 'package:kintura/offline_cache.dart';
 import 'package:kintura/shopping/shopping_icons.dart';
+import 'package:kintura/shopping/shopping_outbox.dart';
 
 import 'widget_test.dart' show FakeBackend, MemoryTokens, disposeApp, pumpApp;
 
@@ -97,7 +99,9 @@ void main() {
       expect(find.descendant(of: _tile('Milch'), matching: find.byIcon(Icons.priority_high)), findsOneWidget);
       await tester.tap(_tile('Milch'));
       await tester.pumpAndSettle();
-      expect((backend.writes['PUT items/i1'] as Map)['done'], true);
+      // Checked off by name, which touches nothing else others may have noted.
+      expect(backend.writes['POST lists/s1/items/check'], {'name': 'Milch'});
+      expect(backend.writes.containsKey('PUT items/i1'), isFalse);
       await tester.tap(_tile('Brot').first);
       await tester.pumpAndSettle();
       expect(backend.writes['POST lists/s1/items'], {'name': 'Brot'});
@@ -375,6 +379,122 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('shopping-edit-list')), findsNothing);
       expect(find.byKey(const Key('shopping-all-lists')), findsOneWidget);
+      await disposeApp(tester);
+    });
+  });
+
+  group('Einkaufen offline', () {
+    test('Änderungen bleiben gespeichert, je Artikel nur die letzte', () async {
+      final store = MemoryOutboxStore();
+      final outbox = ShoppingOutbox(store);
+      await outbox.put(const ShoppingChange(family: 'f1', list: 's1', name: 'Milch', done: true));
+      await outbox.put(const ShoppingChange(family: 'f1', list: 's1', name: 'Brot', done: false));
+      await outbox.put(const ShoppingChange(family: 'f1', list: 's1', name: 'Milch', done: false));
+
+      // As after closing the app.
+      final again = ShoppingOutbox(store);
+      expect([for (final c in again.changes.value) '${c.name} ${c.done}'], ['Brot false', 'Milch false']);
+      expect(again.waitingFor('f1', 's1'), 2);
+      expect(again.waitingFor('f1', 's2'), 0);
+
+      final items = again.apply('f1', 's1', [
+        {'id': 'i1', 'name': 'Milch', 'done': true},
+      ]);
+      expect([for (final i in items) '${i['name']} ${i['done']} ${i['id']}'], ['Milch false i1', 'Brot false ']);
+
+      await again.clear();
+      expect(ShoppingOutbox(store).changes.value, isEmpty);
+
+      // A new article checked off again offline is still to be made.
+      await again.put(const ShoppingChange(family: 'f1', list: 's1', name: 'Übertopf', done: false, newArticle: true));
+      await again.put(const ShoppingChange(family: 'f1', list: 's1', name: 'Übertopf', done: true));
+      final change = ShoppingOutbox(store).changes.value.single;
+      expect((change.done, change.newArticle), (true, true));
+      expect(again.newArticles('f1'), ['Übertopf']);
+    });
+
+    testWidgets('ohne Verbindung einen eigenen Artikel anlegen, mit Verbindung wird er gemacht', (tester) async {
+      final backend = FakeBackend()..shoppingLast = 's1';
+      final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+
+      backend.down = true;
+      await tester.enterText(find.byKey(const Key('shopping-search')), 'übertopf');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Speichern geht erst wieder'), findsNothing);
+      expect(_tile('Übertopf'), findsOneWidget);
+      expect(find.text('1 Änderung ist auf dem Gerät gespeichert und wartet auf Verbindung.'), findsOneWidget);
+
+      // Loaded again from the device, it is still there.
+      await tester.drag(_list, const Offset(0, 300));
+      await tester.pumpAndSettle();
+      expect(_tile('Übertopf'), findsOneWidget);
+
+      backend.down = false;
+      await session.sync();
+      await tester.pumpAndSettle();
+      expect(backend.writes['POST articles'], {'name': 'Übertopf'});
+      expect(backend.writes['POST lists/s1/items'], {'name': 'Übertopf'});
+      expect(backend.shoppingArticles.map((a) => a['name']), ['Übertopf']);
+      expect(find.byKey(const Key('shopping-waiting')), findsNothing);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ohne Verbindung abhaken und hinzufügen, mit Verbindung geht es raus', (tester) async {
+      final backend = FakeBackend()..shoppingLast = 's1';
+      final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-waiting')), findsNothing);
+
+      backend.down = true;
+      await tester.tap(_tile('Milch'));
+      await tester.pumpAndSettle();
+      await tester.tap(_tile('Brot').first);
+      await tester.pumpAndSettle();
+      // Counted on the device: no message that saving failed, Brot open and Milch done.
+      expect(find.textContaining('Speichern geht erst wieder'), findsNothing);
+      expect(find.text('2 Änderungen sind auf dem Gerät gespeichert und warten auf Verbindung.'), findsOneWidget);
+      expect(find.descendant(of: _tile('Milch'), matching: find.text('2 l')), findsNothing);
+      expect(backend.writes.containsKey('POST lists/s1/items/check'), isFalse);
+      expect(backend.writes.containsKey('POST lists/s1/items'), isFalse);
+
+      // Loaded again from the device, it still shows what waits.
+      await tester.drag(_list, const Offset(0, 300));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-waiting')), findsOneWidget);
+      expect(_tile('Brot'), findsOneWidget);
+
+      // The first answer from the server sends what waited.
+      backend.down = false;
+      await session.sync();
+      await tester.pumpAndSettle();
+      expect(backend.writes['POST lists/s1/items/check'], {'name': 'Milch'});
+      expect(backend.writes['POST lists/s1/items'], {'name': 'Brot'});
+      expect(find.byKey(const Key('shopping-waiting')), findsNothing);
+      expect(session.shopping.changes.value, isEmpty);
+      expect([for (final i in backend.shoppingItems) '${i['name']} ${i['done']}'], ['Milch true', 'Brot false']);
+      await disposeApp(tester);
+    });
+
+    testWidgets('alle Listen sind auf dem Gerät, auch die nie geöffneten', (tester) async {
+      final backend = FakeBackend();
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());
+      // All lists only, Wocheneinkauf itself never opened.
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+
+      backend.down = true;
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Wocheneinkauf'));
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: _tile('Milch'), matching: find.text('2 l')), findsOneWidget);
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
       await disposeApp(tester);
     });
   });

@@ -11,6 +11,7 @@ import '../live_updates.dart';
 import '../session.dart';
 import '../shopping/shopping_catalog.dart';
 import '../shopping/shopping_icons.dart';
+import '../shopping/shopping_outbox.dart';
 
 /// How urgent an article is, as the server keeps it; empty is no mark.
 const _urgencies = {
@@ -71,6 +72,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
       ]);
       final wanted = widget.listId ?? (results.first as Map<String, dynamic>?)?['list_id'] as String? ?? '';
       final lists = results.last as List;
+      _keepOnDevice(session, lists);
       if (!mounted) return;
       setState(() {
         _lists = lists;
@@ -80,6 +82,20 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
       });
     } on ApiException {
       if (mounted) setState(() => _deciding = false);
+    }
+  }
+
+  /// Loads every list and the articles behind the scenes, so that each list is on the
+  /// device for shopping where there is no connection, not only the ones opened.
+  static void _keepOnDevice(AppSession session, List<dynamic> lists) {
+    if (session.api.offline.value || session.api.cache == null) return;
+    final base = '${session.familyPath}/shopping';
+    for (final path in [
+      '$base/articles',
+      for (final list in lists) '$base/lists/${(list as Map)['id']}/items',
+    ]) {
+      // What does not load now is simply not there offline.
+      session.api.get(path).ignore();
     }
   }
 
@@ -587,11 +603,26 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
 
   String get _base => '${SessionScope.of(context).familyPath}/shopping';
 
+  /// Kept, since the session is not to be looked up while the page is disposed.
+  late final ShoppingOutbox _outbox = SessionScope.of(context).shopping;
+  late final String _family = SessionScope.of(context).current!.id;
+  int _waiting = 0;
+
+  /// Once what waited has reached the server, the list shows the server's state again.
+  void _outboxChanged() {
+    final waiting = _outbox.waitingFor(_family, _list['id'] as String);
+    final sent = waiting < _waiting;
+    if (waiting != _waiting) setState(() => _waiting = waiting);
+    if (sent) _load(articles: false);
+  }
+
   @override
   void initState() {
     super.initState();
     _search.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _outbox.changes.addListener(_outboxChanged);
+      _outboxChanged();
       _remember();
       _load();
       listenLive(const {'shopping'}, () {
@@ -608,6 +639,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
   @override
   void dispose() {
     _timer?.cancel();
+    _outbox.changes.removeListener(_outboxChanged);
     _search.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -623,8 +655,13 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       ]);
       if (!mounted) return;
       setState(() {
-        _items = (results[0] as List).cast<Map<String, dynamic>>();
+        // From the server or, offline, from the device: either way with what still waits.
+        _items = _outbox.apply(_family, _list['id'] as String, (results[0] as List).cast<Map<String, dynamic>>());
         if (results.length > 1) _articles = mergeArticles(results[1] as List);
+        // Made offline, the server does not know them yet.
+        for (final name in _outbox.newArticles(_family)) {
+          _articles?.putIfAbsent(name, () => Article(name, ownCategory, '', custom: true));
+        }
         _error = null;
       });
     } on Exception catch (e) {
@@ -643,59 +680,40 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
 
   bool _isOpen(String name) => _itemOf(name)?['done'] == false;
 
-  /// Puts an article on the list, or back on it. Shown at once, saved behind.
-  Future<void> _add(String name) async {
-    final existing = _itemOf(name);
-    setState(() {
-      if (existing != null) {
-        existing['done'] = false;
-      } else {
-        _items.add({
-          'id': '',
-          'name': name,
-          'amount': '',
-          'note': '',
-          'urgency': '',
-          'done': false,
-          'photo_ids': <String>[],
-        });
-      }
-    });
+  /// Puts an article on the list, or back on it, or checks it off. It shows at once and
+  /// counts on the device; without a connection it waits there for the server.
+  Future<void> _set(String name, {required bool done, bool newArticle = false}) async {
     final session = SessionScope.of(context);
-    await guarded(context, () => session.api.post('$_base/lists/${_list['id']}/items', {'name': name}));
-    await _load(articles: false);
-  }
-
-  Future<void> _check(Map<String, dynamic> item) async {
-    if ((item['id'] as String).isEmpty) return;
-    setState(() => item['done'] = true);
-    final session = SessionScope.of(context);
-    await guarded(context, () => session.api.put('$_base/items/${item['id']}', {...item, 'done': true}));
-    await _load(articles: false);
-  }
-
-  Future<void> _toggle(String name) async {
-    final item = _itemOf(name);
-    if (item != null && item['done'] == false) {
-      await _check(item);
-    } else {
-      await _add(name);
+    final messenger = ScaffoldMessenger.of(context);
+    final change = ShoppingChange(
+      family: _family,
+      list: _list['id'] as String,
+      name: name,
+      done: done,
+      newArticle: newArticle,
+    );
+    await _outbox.put(change);
+    if (!mounted) return;
+    setState(() => _items = _outbox.apply(_family, _list['id'] as String, _items));
+    final refused = await session.sendShopping();
+    for (final message in refused) {
+      messenger.showSnackBar(SnackBar(content: Text(message)));
     }
+    if (mounted) await _load(articles: false);
   }
+
+  Future<void> _add(String name) => _set(name, done: false);
+
+  Future<void> _toggle(String name) => _set(name, done: _isOpen(name));
 
   /// Makes an article of the circle's own from what was typed, and puts it on the list.
+  /// Offline too: the server makes it with the change, see [ShoppingChange.newArticle].
   Future<void> _addOwn(String text) async {
     final name = capitalizedName(text);
     if (name.isEmpty) return;
-    final session = SessionScope.of(context);
-    final ok = await guarded(context, () async {
-      final result = await session.api.post('$_base/articles', {'name': name});
-      final saved = (result as Map<String, dynamic>)['name'] as String;
-      _articles?[saved] = Article(saved, ownCategory, '', custom: true);
-    });
-    if (!ok || !mounted) return;
+    setState(() => _articles?.putIfAbsent(name, () => Article(name, ownCategory, '', custom: true)));
     _search.clear();
-    await _add(name);
+    await _set(name, done: false, newArticle: true);
   }
 
   Future<void> _openArticle(String name) async {
@@ -758,6 +776,25 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
           ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
           : Column(
               children: [
+                if (_waiting > 0)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: Row(
+                      key: const Key('shopping-waiting'),
+                      children: [
+                        Icon(Icons.cloud_off_outlined, size: 18, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _waiting == 1
+                                ? '1 Änderung ist auf dem Gerät gespeichert und wartet auf Verbindung.'
+                                : '$_waiting Änderungen sind auf dem Gerät gespeichert und warten auf Verbindung.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 if (_readOnly)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),

@@ -468,6 +468,33 @@ func (s *Server) addShoppingItem(w http.ResponseWriter, r *http.Request, c reqCt
 	return nil
 }
 
+// checkShoppingItem checks an article off a list by its name. The app checks off this
+// way, also what it kept while offline: an article put on the list there has no id yet,
+// and only done changes, so that notes others made meanwhile stay. An article that is
+// not open on the list, as one someone else checked off or deleted, stays as it is.
+func (s *Server) checkShoppingItem(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	ctx, listID := r.Context(), r.PathValue("id")
+	if err := s.shoppingListWriteAccess(ctx, c, listID); err != nil {
+		return err
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		return err
+	}
+	name, err := required(in.Name, "Name", 100)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE shopping_items SET done = 1, done_at = ? WHERE list_id = ? AND name = ? AND done = 0`,
+		now(), listID, name); err != nil {
+		return err
+	}
+	return noContent(w)
+}
+
 // updateShoppingItem saves what is noted about an article, checks it off or takes it
 // back, and moves it to another list. A list that has the article already takes over
 // the notes, and the entry here goes.

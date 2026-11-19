@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
 import 'live_updates.dart';
+import 'shopping/shopping_outbox.dart';
 
 abstract class TokenStore {
   Future<String?> read();
@@ -169,13 +171,27 @@ class Invitation {
 enum SessionStatus { loading, signedOut, signedIn, unreachable }
 
 class AppSession extends ChangeNotifier {
-  AppSession({required this.api, required this.tokens, this.themes}) {
+  AppSession({required this.api, required this.tokens, this.themes, ShoppingOutbox? shopping})
+    : shopping = shopping ?? ShoppingOutbox() {
     api.onUnauthorized = _dropSession;
+    // Back online: what was changed while shopping without a connection goes out.
+    api.offline.addListener(() {
+      if (!api.offline.value) sendShopping();
+    });
   }
 
   final ApiClient api;
   final TokenStore tokens;
   final ThemeStore? themes;
+
+  /// Changes to shopping lists that wait for the server, see [ShoppingOutbox].
+  final ShoppingOutbox shopping;
+
+  /// Returns what the server refused; the rest waits while it cannot be reached.
+  Future<List<String>> sendShopping() async {
+    if (status != SessionStatus.signedIn || shopping.changes.value.isEmpty) return const [];
+    return shopping.send(api);
+  }
 
   /// Changes others make, as they happen; see LiveConnection.
   final live = LiveUpdates();
@@ -240,6 +256,8 @@ class AppSession extends ChangeNotifier {
     }
     try {
       await refresh();
+      // Left over from shopping offline before the app was closed.
+      unawaited(sendShopping());
     } on ApiException catch (e) {
       // A network problem must not log the user out; a 401 already did.
       if (e.status != 401) {
@@ -336,6 +354,7 @@ class AppSession extends ChangeNotifier {
     tokens.clear();
     // Nothing of the account stays readable on the device.
     api.cache?.clear();
+    shopping.clear();
     api.token = null;
     status = SessionStatus.signedOut;
     notifyListeners();
