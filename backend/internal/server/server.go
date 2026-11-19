@@ -22,15 +22,18 @@ import (
 const timeFormat = "2006-01-02T15:04:05Z"
 
 type Server struct {
-	db        *database.DB
-	mailer    mail.Mailer
-	files     storage.Store
-	publicURL string
-	corsOrig  string
-	adminKey  string
-	timezone  string // default time zone of events, see defaultZone
-	version   string
-	webDir    string // relative to the working directory, overridden in tests
+	db         *database.DB
+	mailer     mail.Mailer
+	files      storage.Store
+	publicURL  string
+	corsOrig   string
+	adminKey   string
+	timezone   string // default time zone of events, see defaultZone
+	version    string
+	websiteURL string
+	// minAppVersion, apart for tests.
+	minAppVersion string
+	webDir        string // relative to the working directory, overridden in tests
 
 	placesURL  string // overrides the address search in tests
 	placesMu   sync.Mutex
@@ -177,10 +180,6 @@ func (s *Server) sessionUser(r *http.Request) (string, error) {
 		return "", fail(http.StatusUnauthorized, "Nicht angemeldet")
 	}
 	return userID, err
-}
-
-func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"version": s.version})
 }
 
 // webApp serves the Flutter web build. Without the directory, as in development,
@@ -343,7 +342,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /api/admin/pages", s.dashboard(s.adminPages))
 	mux.Handle("PUT /api/admin/pages/{slug}", s.dashboard(s.adminUpdatePage))
 
-	return s.cors(mux)
+	return s.cors(s.requireAppVersion(mux))
 }
 
 // cors allows the Flutter web build to call the API. Auth uses bearer tokens,
@@ -351,7 +350,7 @@ func (s *Server) routes() http.Handler {
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", s.corsOrig)
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-App-Version, X-App-Platform")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

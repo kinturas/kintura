@@ -31,6 +31,19 @@ Die Version steht in der Datei `VERSION`. `make build` gibt sie an App und Backe
 weiter, die Build-Nummer ist die Anzahl der Commits. Das Backend nennt seine Version
 unter `GET /api/version`, ohne `make build` heißt sie dort `dev`.
 
+### Updates der Apps
+
+Jede Anfrage der App nennt ihre Version und Plattform (`X-App-Version: 0.0.13+7`, `X-App-Platform: android`).
+Die älteste App, mit der das Backend noch funktioniert, steht als `minAppVersion` in
+`backend/internal/server/appversion.go`. **Bricht eine Änderung ältere Apps** (eine Route fällt weg oder ändert sich
+unverträglich), wird sie dort auf die Version des anstehenden Releases gesetzt. Ältere Apps bekommen dann auf jede Anfrage
+`426` und zeigen die Seite „Update nötig“: im Web mit „Neu laden“, bei Android und Windows mit einem Link zur Website.
+`GET /api/version` bleibt für sie erreichbar. Anfragen ohne Version, etwa von Apps vor dieser Prüfung, lässt das Backend durch.
+
+Ohne Sperre zeigen die Apps einen Hinweis „Eine neue Version von Kintura ist da“: die Web-App, sobald der Server eine
+andere Version hat, Android und Windows, sobald `releases.json` der Website (`WEBSITE_URL`) einen neueren Build für ihre
+Plattform nennt. Ohne `WEBSITE_URL` gibt es diesen Hinweis bei Android und Windows nicht.
+
 ## Docker
 
 `make docker` baut das Image `kintura:<version>` mit Backend und Web-App. `make build-android` baut zum Testen nur die
@@ -60,8 +73,9 @@ Hauptversion und zählen je eine eigene Build-Nummer hoch, die auch bei einer ne
 | `make deploy-android` | `android-v1.2.3-7` | APK als GitHub-Release |
 | `make deploy-windows` | `windows-v1.2.3-4` | Installer als GitHub-Release |
 | `make deploy-website` | `website-v1.2.3-5` | Image `ghcr.io/kinturas/kintura-website:1.2.3-5` und `:latest` |
+| `make deploy-all` | `web-v…`, `android-v…`, `windows-v…` | `deploy`, `deploy-android` und `deploy-windows` nacheinander mit derselben Hauptversion; die Website baut GitHub danach selbst neu |
 
-Standardmäßig steigt die letzte Stelle der Hauptversion, sonst etwa `make deploy BUMP=minor` oder `BUMP=major`.
+Standardmäßig steigt die letzte Stelle der Hauptversion, sonst etwa `make deploy BUMP=minor` oder `BUMP=major`, das gilt auch für `make deploy-all`.
 Android und Windows brauchen die Adresse des Backends als Repository-Variable `APP_URL` in GitHub, im Betrieb `https://app.kintura.de`.
 
 ## Website
@@ -146,6 +160,7 @@ Get-Content app/android/key.properties -Raw | Set-Clipboard
 | `S3_PATH_STYLE` | `false` | `true` für Dienste ohne Bucket-Subdomains |
 | `APP_URL` | `http://localhost:8080` | Basis für Links in Mails und Downloads |
 | `CORS_ORIGIN` | `*` | Erlaubter Ursprung der Web-App |
+| `WEBSITE_URL` | | Website mit den Downloads, etwa `https://kintura.de`; Android und Windows verweisen für Updates dorthin |
 | `SMTP_HOST`, `SMTP_PORT` | Port `587` | Mailserver (Port 465 nutzt direktes TLS) |
 | `SMTP_USER`, `SMTP_PASS` | | Zugangsdaten |
 | `SMTP_FROM` | `SMTP_USER` | Absenderadresse |

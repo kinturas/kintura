@@ -148,7 +148,7 @@ class LiveConnection {
     Timer? watchdog;
     try {
       final request = http.Request('GET', Uri.parse('${api.baseUrl}/api/live'))
-        ..headers['Authorization'] = 'Bearer ${api.token}'
+        ..headers.addAll(api.headers)
         ..headers['Accept'] = 'text/event-stream';
       final response = await client.send(request).timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {

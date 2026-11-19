@@ -103,6 +103,7 @@ func main() {
 		CORSOrigin: env("CORS_ORIGIN", "*"),
 		AdminKey:   os.Getenv("ADMIN_API_KEY"),
 		Version:    version,
+		WebsiteURL: os.Getenv("WEBSITE_URL"),
 	})
 	if err != nil {
 		log.Fatal(err)

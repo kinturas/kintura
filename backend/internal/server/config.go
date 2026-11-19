@@ -24,6 +24,7 @@ type Config struct {
 	CORSOrigin string
 	AdminKey   string // of the admin dashboard, ignored if too short
 	Version    string // of this build, shown by GET /api/version
+	WebsiteURL string // where the apps are downloaded, for the apps to point to; may be empty
 }
 
 // New checks the settings and makes sure the account for the token login exists.
@@ -52,15 +53,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		db:        cfg.DB,
-		files:     cfg.Files,
-		mailer:    cfg.Mailer,
-		timezone:  timezone,
-		publicURL: cfg.PublicURL,
-		corsOrig:  cfg.CORSOrigin,
-		adminKey:  adminKey,
-		version:   cfg.Version,
-		webDir:    "web",
+		db:            cfg.DB,
+		files:         cfg.Files,
+		mailer:        cfg.Mailer,
+		timezone:      timezone,
+		publicURL:     cfg.PublicURL,
+		corsOrig:      cfg.CORSOrigin,
+		adminKey:      adminKey,
+		version:       cfg.Version,
+		websiteURL:    strings.TrimRight(cfg.WebsiteURL, "/"),
+		minAppVersion: minAppVersion,
+		webDir:        "web",
 
 		live:          newLiveHub(),
 		liveHeartbeat: liveHeartbeat,

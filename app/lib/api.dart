@@ -45,7 +45,15 @@ class ApiClient {
   /// Called when the server rejects the session.
   void Function()? onUnauthorized;
 
-  Map<String, String> get _authHeaders => {
+  /// Tells the server which app this is (`X-App-Version`, `X-App-Platform`), set once
+  /// at the start, see identifyApp.
+  Map<String, String> clientHeaders = const {};
+
+  /// True once the server turned this app away as too old (426): it has to be updated.
+  final updateRequired = ValueNotifier(false);
+
+  Map<String, String> get headers => {
+    ...clientHeaders,
     if (token != null) 'Authorization': 'Bearer $token',
   };
 
@@ -81,7 +89,7 @@ class ApiClient {
   Future<dynamic> delete(String path) => _send('DELETE', path);
 
   http.Request _request(String method, String path) =>
-      http.Request(method, Uri.parse('$baseUrl$path'))..headers.addAll(_authHeaders);
+      http.Request(method, Uri.parse('$baseUrl$path'))..headers.addAll(headers);
 
   Future<dynamic> _send(String method, String path, [Object? body]) async {
     final request = _request(method, path);
@@ -100,7 +108,7 @@ class ApiClient {
 
   Future<dynamic> upload(String path, String filename, Uint8List bytes, {String method = 'POST'}) async {
     final request = http.MultipartRequest(method, Uri.parse('$baseUrl$path'))
-      ..headers.addAll(_authHeaders)
+      ..headers.addAll(headers)
       ..files.add(
         http.MultipartFile.fromBytes('file', bytes, filename: filename),
       );
@@ -133,6 +141,9 @@ class ApiClient {
     }
     if (response.statusCode == 401) {
       onUnauthorized?.call();
+    }
+    if (response.statusCode == 426) {
+      updateRequired.value = true;
     }
     throw ApiException(response.statusCode, _errorMessage(response));
   }

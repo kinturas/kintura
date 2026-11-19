@@ -30,7 +30,7 @@ BUMP ?= patch
 CHECK_APP_URL = $(if $(or $(findstring localhost,$(APP_URL)),$(findstring 127.0.0.1,$(APP_URL))),$(error Die APK braucht die echte Adresse des Backends: APP_URL in .env setzen))
 
 .DEFAULT_GOAL := help
-.PHONY: help dev backend app tools test test-backend test-app test-integration build build-backend build-app build-android build-windows build-windows-installer docker deploy-dev docker-website deploy deploy-android deploy-windows deploy-website android-key clean
+.PHONY: help dev backend app tools test test-backend test-app test-integration build build-backend build-app build-android build-windows build-windows-installer docker deploy-dev docker-website deploy deploy-android deploy-windows deploy-website deploy-all android-key clean
 
 help:
 	@echo make dev            - Backend und App zusammen starten
@@ -49,6 +49,7 @@ help:
 	@echo make deploy-android - Aktuelle Hauptversion mit neuer Build-Nummer, GitHub baut die APK als Release
 	@echo make deploy-windows - Aktuelle Hauptversion mit neuer Build-Nummer, GitHub baut das Windows-Release
 	@echo make deploy-website - Neue Build-Nummer, GitHub baut das Website-Image mit nginx
+	@echo make deploy-all     - Web, Android und Windows nacheinander mit derselben Version, die Website folgt von selbst
 	@echo make docker-website - Website-Image mit nginx lokal bauen, zum Testen oder eigenen Betrieb
 	@echo make android-key    - Release-Schluessel der Android-App einmalig erzeugen
 	@echo make clean          - Build-Ausgaben loeschen, backend/data bleibt erhalten
@@ -120,6 +121,13 @@ deploy:
 
 deploy-android deploy-windows deploy-website:
 	cd backend && go run ./cmd/release $(patsubst deploy-%,%,$@)
+
+# Nacheinander, auch mit -j: Web zaehlt die Version hoch, Android und Windows uebernehmen sie.
+# Die Website baut GitHub nach den App-Releases selbst neu.
+deploy-all:
+	$(MAKE) deploy
+	$(MAKE) deploy-android
+	$(MAKE) deploy-windows
 
 deploy-dev:
 	$(if $(DOCKER_HUB_URL),,$(error DOCKER_HUB_URL fehlt, in .env setzen, z. B. DOCKER_HUB_URL=meinname/kintura))

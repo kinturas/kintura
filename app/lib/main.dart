@@ -22,6 +22,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('de');
   final api = ApiClient(cache: await _openCache());
+  // Before the first request, so that the server knows the version from the start.
+  final version = await identifyApp(api);
   final session = AppSession(
     api: api,
     tokens: SecureTokenStore(),
@@ -33,7 +35,7 @@ Future<void> main() async {
   session.start();
   SessionSync(session: session).start();
   LiveConnection(session: session).start();
-  final updates = UpdateCheck(api: api)..start();
+  final updates = UpdateCheck(api: api, version: version)..start();
   runApp(KinturaApp(session: session, updates: updates));
 }
 
@@ -60,7 +62,7 @@ class KinturaApp extends StatelessWidget {
 
   final AppSession session;
 
-  /// Shows a bar once the server runs a newer web build, see [UpdateCheck].
+  /// Shows a bar once a newer version is there, and a page once this one is too old, see [UpdateCheck].
   final UpdateCheck? updates;
 
   ThemeData _theme(Brightness brightness) => ThemeData(
