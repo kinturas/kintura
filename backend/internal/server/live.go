@@ -110,7 +110,7 @@ func liveTopic(path string) string {
 			return ""
 		}
 		return "shopping"
-	case "events", "calendars", "categories", "attachments":
+	case "events", "calendars", "categories", "attachments", "calendar-cleanup":
 		return "calendar"
 	case "activities", "select":
 		// What one reads or picks for oneself is nobody else's news.

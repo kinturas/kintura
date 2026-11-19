@@ -339,7 +339,8 @@ sie und für Admins nur, was für jeden sichtbar ist oder wo sie Teilnehmer oder
 - **Rolle Kind:** Unter „Meine Kalender“ schaltet `restrict_user` Kalender nur an und aus. Die Seiten der einzelnen Kalender öffnen sich
   nicht, außer bei den Schulferien für die Bundesländer und den Feiertagen für die Länder, jeweils auch mit der Freigabe. Farben ändern und Kalender per URL hinzufügen lehnt auch das Backend ab.
 - **Kalenderbereinigung:** Einzelne Termine, die länger als der eingestellte Zeitraum zurückliegen (Standard 1 Jahr),
-  löscht das Backend stündlich endgültig samt Anhängen. Serien bleiben. Einstellen können das nur Admins.
+  löscht das Backend endgültig samt Anhängen. Serien bleiben. Die Bereinigung läuft automatisch (stündlich), manuell
+  (nur über „Jetzt bereinigen“) oder ist aus. Einstellen und von Hand starten können sie nur Admins.
 
 Ein Tipp auf einen Eintrag öffnet immer die Seite „Termin“. Beim Standardkalender zeigt sie Zeit, Teilnehmer, Kalender,
 Erinnerung, Ersteller und die letzte Änderung, darunter die Kommentare. Das Feld für einen neuen steht fest unten, am PC schickt Umschalt + Enter ihn ab. Oben rechts gibt es „Bearbeiten“ und

@@ -25,6 +25,12 @@ const _cleanupChoices = {
   36: '3 Jahre',
 };
 
+String _cleanupLabel(int months, String mode) => switch (mode) {
+  'off' => 'Aus',
+  'manual' => '${_cleanupChoices[months] ?? ''}, manuell',
+  _ => '${_cleanupChoices[months] ?? ''}, automatisch',
+};
+
 String _keyPath(BuildContext context, Map<String, dynamic> calendar) {
   final session = SessionScope.of(context);
   return '${session.familyPath}/calendars/${Uri.encodeComponent(calendar['key'] as String)}';
@@ -104,9 +110,12 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
     return _change(from, () => session.api.post('${session.familyPath}/calendar-feeds', feed));
   }
 
-  Future<bool> _setCleanup(BuildContext from, int months, int current) async {
+  /// Asks first when the hourly run would delete more than before.
+  Future<bool> _setCleanup(BuildContext from, (int, String) next, (int, String) current) async {
     final session = SessionScope.of(context);
-    if (months < current &&
+    final (months, mode) = next;
+    final deletesMore = mode == 'auto' && (current.$2 != 'auto' || months < current.$1);
+    if (deletesMore &&
         !await confirm(
           from,
           'Einzelne Termine, die länger als ${_cleanupChoices[months]} zurückliegen, werden für den ganzen Kreis endgültig gelöscht.',
@@ -115,7 +124,29 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
       return false;
     }
     if (!from.mounted) return false;
-    return _change(from, () => session.api.put('${session.familyPath}/calendar-cleanup', {'months': months}));
+    return _change(
+      from,
+      () => session.api.put('${session.familyPath}/calendar-cleanup', {'months': months, 'mode': mode}),
+    );
+  }
+
+  /// Returns how many events were deleted, or null if nothing ran.
+  Future<int?> _runCleanup(BuildContext from, int months) async {
+    final session = SessionScope.of(context);
+    if (!await confirm(
+          from,
+          'Einzelne Termine, die länger als ${_cleanupChoices[months]} zurückliegen, werden jetzt für den ganzen Kreis endgültig gelöscht. Serien bleiben.',
+          action: 'Bereinigen',
+        ) ||
+        !from.mounted) {
+      return null;
+    }
+    int? deleted;
+    await _change(from, () async {
+      final result = await session.api.post('${session.familyPath}/calendar-cleanup/run');
+      deleted = result['deleted'] as int;
+    });
+    return deleted;
   }
 
   Future<void> _open(Widget page) => Navigator.of(context).push<void>(MaterialPageRoute(builder: (_) => page));
@@ -139,6 +170,48 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
     child: Text(text, style: Theme.of(context).textTheme.titleMedium),
   );
 
+  Widget _subheading(BuildContext context, String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+    child: Text(
+      text,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Theme.of(context).colorScheme.primary),
+    ),
+  );
+
+  static const _ownGroup = 'own';
+
+  /// Which sub-heading a calendar is listed under: the circle's own ones, those of the
+  /// other circles, or the ones from outside.
+  static String _group(Map<String, dynamic> calendar) => switch (calendar['kind']) {
+    'other_family' => 'other_family',
+    'feed' => 'feed',
+    _ => _ownGroup,
+  };
+
+  Widget _calendarTile(Map<String, dynamic> calendar, Map<String, dynamic> data, bool restricted, ColorScheme scheme) =>
+      ListTile(
+        key: Key('calendar-${calendar['key']}'),
+        leading: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Checkbox(
+              value: calendar['enabled'] as bool,
+              onChanged: (value) => _toggle(calendar, value!),
+            ),
+            ColorDot(calendar['color'] as String),
+          ],
+        ),
+        title: Text(calendar['name'] as String),
+        subtitle: Text(
+          calendar['last_error'] as String? ?? calendar['subtitle'] as String,
+          style: calendar['last_error'] == null ? null : TextStyle(color: scheme.error),
+        ),
+        // Restricted members only switch calendars on and off, and choose
+        // the states of the school holidays and the countries of the holidays.
+        trailing: !restricted || _regional.contains(calendar['kind']) ? const Icon(Icons.chevron_right) : null,
+        onTap: !restricted || _regional.contains(calendar['kind']) ? () => _openDetail(calendar, data) : null,
+      );
+
   @override
   Widget build(BuildContext context) {
     final session = SessionScope.of(context);
@@ -160,6 +233,7 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
               minutes: reminderLabel(minutes),
           };
           final cleanup = data['cleanup_months'] as int;
+          final cleanupMode = data['cleanup_mode'] as String? ?? 'auto';
           final isAdmin = session.current?.isAdmin ?? false;
           final restricted = session.current?.isRestricted ?? false;
           final scheme = Theme.of(context).colorScheme;
@@ -168,30 +242,16 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
             padding: const EdgeInsets.only(bottom: 32),
             children: [
               _heading(context, 'Meine Kalender'),
-              for (final calendar in calendars) ...[
-                ListTile(
-                  key: Key('calendar-${calendar['key']}'),
-                  leading: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Checkbox(
-                        value: calendar['enabled'] as bool,
-                        onChanged: (value) => _toggle(calendar, value!),
-                      ),
-                      ColorDot(calendar['color'] as String),
-                    ],
-                  ),
-                  title: Text(calendar['name'] as String),
-                  subtitle: Text(
-                    calendar['last_error'] as String? ?? calendar['subtitle'] as String,
-                    style: calendar['last_error'] == null ? null : TextStyle(color: scheme.error),
-                  ),
-                  // Restricted members only switch calendars on and off, and choose
-                  // the states of the school holidays and the countries of the holidays.
-                  trailing: !restricted || _regional.contains(calendar['kind']) ? const Icon(Icons.chevron_right) : null,
-                  onTap: !restricted || _regional.contains(calendar['kind']) ? () => _openDetail(calendar, data) : null,
-                ),
-              ],
+              for (final group in [
+                (session.current?.type.mine ?? FamilyType.family.mine, _ownGroup),
+                ('Andere Kreise', 'other_family'),
+                ('Externe Kalender', 'feed'),
+              ])
+                if (calendars.where((calendar) => _group(calendar) == group.$2).toList() case final shown
+                    when shown.isNotEmpty) ...[
+                  _subheading(context, group.$1),
+                  for (final calendar in shown) _calendarTile(calendar, data, restricted, scheme),
+                ],
               _heading(context, 'Kalender verbinden'),
               const ListTile(
                 enabled: false,
@@ -263,19 +323,19 @@ class _CalendarManageScreenState extends State<CalendarManageScreen> {
                 key: const Key('cleanup'),
                 leading: const Icon(Icons.auto_delete_outlined),
                 title: const Text('Kalenderbereinigung'),
-                subtitle: Text(_cleanupChoices[cleanup] ?? ''),
+                subtitle: Text(_cleanupLabel(cleanup, cleanupMode)),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => _open(
-                  _ChoiceScreen(
-                    title: 'Kalenderbereinigung',
-                    intro: isAdmin
-                        ? 'Löscht einzelne Termine, die länger als dieser Zeitraum zurückliegen, endgültig für den ganzen Kreis. Serien bleiben.'
-                        : 'Löscht einzelne Termine, die länger als dieser Zeitraum zurückliegen. Das stellen die Admins des Kreises ein.',
-                    choices: _cleanupChoices,
-                    selected: cleanup,
-                    onSelected: isAdmin ? (from, value) => _setCleanup(from, value, cleanup) : null,
-                  ),
-                ),
+                onTap: () async {
+                  await _open(
+                    _CleanupScreen(
+                      months: cleanup,
+                      mode: cleanupMode,
+                      onChanged: isAdmin ? _setCleanup : null,
+                      onRun: _runCleanup,
+                    ),
+                  );
+                  _view.currentState?.reload();
+                },
               ),
             ],
           );
@@ -323,6 +383,137 @@ class _ChoiceScreen extends StatelessWidget {
                       if (choice.key == selected || await save(context, choice.key)) navigator.pop();
                     },
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Whether, when and after how long past events are deleted. Each change counts at once.
+class _CleanupScreen extends StatefulWidget {
+  const _CleanupScreen({required this.months, required this.mode, required this.onChanged, required this.onRun});
+
+  final int months;
+  final String mode;
+
+  /// Reports whether the change was saved; null makes the page read-only, for all but admins.
+  final Future<bool> Function(BuildContext from, (int, String) next, (int, String) current)? onChanged;
+  final Future<int?> Function(BuildContext from, int months) onRun;
+
+  @override
+  State<_CleanupScreen> createState() => _CleanupScreenState();
+}
+
+class _CleanupScreenState extends State<_CleanupScreen> {
+  late int _months = widget.months;
+  late String _mode = widget.mode;
+  bool _running = false;
+
+  Future<void> _set({int? months, String? mode}) async {
+    final save = widget.onChanged;
+    if (save == null) return;
+    final next = (months ?? _months, mode ?? _mode);
+    if (next == (_months, _mode)) return;
+    if (await save(context, next, (_months, _mode)) && mounted) {
+      setState(() {
+        _months = next.$1;
+        _mode = next.$2;
+      });
+    }
+  }
+
+  Future<void> _run() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _running = true);
+    final deleted = await widget.onRun(context, _months);
+    if (!mounted) return;
+    setState(() => _running = false);
+    if (deleted == null) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(switch (deleted) {
+          0 => 'Keine alten Termine gefunden.',
+          1 => '1 Termin gelöscht.',
+          _ => '$deleted Termine gelöscht.',
+        }),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editable = widget.onChanged != null;
+    final on = _mode != 'off';
+    return Scaffold(
+      appBar: AppBar(title: const Text('Kalenderbereinigung')),
+      body: ListView(
+        padding: const EdgeInsets.only(bottom: 32),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              editable
+                  ? 'Löscht einzelne Termine, die länger als der gewählte Zeitraum zurückliegen, endgültig für den ganzen Kreis. Serien bleiben.'
+                  : 'Löscht einzelne Termine, die länger als der gewählte Zeitraum zurückliegen. Das stellen die Admins des Kreises ein.',
+            ),
+          ),
+          SwitchListTile(
+            key: const Key('cleanup-enabled'),
+            title: const Text('Alte Termine löschen'),
+            value: on,
+            // Switched on, it starts as manual, so that nothing is deleted before one chooses so.
+            onChanged: editable ? (value) => _set(mode: value ? 'manual' : 'off') : null,
+          ),
+          if (on) ...[
+            // On its own line: beside a title it would not fit a phone.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<String>(
+                  key: const Key('cleanup-mode'),
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(value: 'auto', label: Text('Automatisch')),
+                    ButtonSegment(value: 'manual', label: Text('Manuell')),
+                  ],
+                  selected: {_mode},
+                  onSelectionChanged: editable ? (value) => _set(mode: value.first) : null,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                _mode == 'manual' ? 'Läuft nur, wenn ein Admin sie startet.' : 'Läuft von selbst, stündlich.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text('Zeitraum', style: Theme.of(context).textTheme.titleSmall),
+            ),
+            for (final choice in _cleanupChoices.entries)
+              ListTile(
+                title: Text(choice.value),
+                enabled: editable,
+                trailing: choice.key == _months ? const Icon(Icons.check) : null,
+                onTap: editable ? () => _set(months: choice.key) : null,
+              ),
+            if (_mode == 'manual' && editable)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.icon(
+                    key: const Key('cleanup-run'),
+                    onPressed: _running ? null : _run,
+                    icon: const Icon(Icons.auto_delete_outlined),
+                    label: const Text('Jetzt bereinigen'),
+                  ),
+                ),
+              ),
+          ],
         ],
       ),
     );

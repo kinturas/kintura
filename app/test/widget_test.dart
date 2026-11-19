@@ -139,6 +139,7 @@ class FakeBackend {
   bool rejectInvitation = false;
   bool rejectColors = false;
   int? feedEvents = 0;
+  String cleanupMode = 'auto';
   bool rejectPlaces = false;
   bool rejectFeeds = false;
   bool rejectPrefs = false;
@@ -450,7 +451,11 @@ class FakeBackend {
             {'Code': 'DE-HE', 'Name': 'Hessen'},
           ],
           'cleanup_months': 12,
+          'cleanup_mode': cleanupMode,
         };
+      case '/api/families/f1/calendar-cleanup/run':
+        writes['${request.method} ${request.url.path}'] = body;
+        response = {'deleted': 3};
       case '/api/families/f1/calendar-feeds/x/refresh':
         final events = feedEvents;
         if (events == null) return _json({'error': 'Der Kalender konnte nicht geladen werden.'}, 400);
@@ -5450,7 +5455,7 @@ void calendarTests() {
   group('Kalender verwalten', () {
     testWidgets('zeigt Kalender, Verbindungen und Einstellungen', (tester) async {
       await _openManage(tester, FakeBackend());
-      for (final text in ['Meine Kalender', 'Müller', 'Standardkalender', 'Geplante Aufgaben', 'Schulferien', 'Kalender verbinden']) {
+      for (final text in ['Meine Kalender', 'Meine Familie', 'Müller', 'Standardkalender', 'Geplante Aufgaben', 'Schulferien', 'Kalender verbinden']) {
         expect(find.text(text), findsOneWidget, reason: text);
       }
       await _scrollPanel(tester, find.text('Kalenderbereinigung'));
@@ -5952,7 +5957,7 @@ void calendarTests() {
       final backend = FakeBackend();
       await _openManage(tester, backend);
       await _scrollPanel(tester, find.byKey(const Key('cleanup')));
-      expect(find.text('1 Jahr'), findsOneWidget);
+      expect(find.text('1 Jahr, automatisch'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('cleanup')));
       await tester.pumpAndSettle();
@@ -5969,8 +5974,93 @@ void calendarTests() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Übernehmen'));
       await tester.pumpAndSettle();
-      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 3});
-      expect(find.widgetWithText(AppBar, 'Kalenderbereinigung'), findsNothing);
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 3, 'mode': 'auto'});
+      // The page stays open for the other settings.
+      expect(find.widgetWithText(AppBar, 'Kalenderbereinigung'), findsOneWidget);
+      expect(find.widgetWithIcon(ListTile, Icons.check), findsOneWidget);
+      expect(find.widgetWithText(ListTile, '3 Monate'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('lässt sich ausschalten, wieder eingeschaltet ist sie erst manuell', (tester) async {
+      final backend = FakeBackend();
+      await _openManage(tester, backend);
+      await _scrollPanel(tester, find.byKey(const Key('cleanup')));
+      await tester.tap(find.byKey(const Key('cleanup')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('cleanup-enabled')));
+      await tester.pumpAndSettle();
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 12, 'mode': 'off'});
+      // Off, there is nothing more to choose.
+      expect(find.byKey(const Key('cleanup-mode')), findsNothing);
+      expect(find.text('3 Monate'), findsNothing);
+
+      // On again, it is manual first, so nothing is deleted and there is nothing to ask.
+      await tester.tap(find.byKey(const Key('cleanup-enabled')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('endgültig gelöscht'), findsNothing);
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 12, 'mode': 'manual'});
+      expect(find.byKey(const Key('cleanup-run')), findsOneWidget);
+
+      // Only choosing automatic then asks.
+      await tester.tap(find.text('Automatisch'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('endgültig gelöscht'), findsOneWidget);
+      await tester.tap(find.text('Übernehmen'));
+      await tester.pumpAndSettle();
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 12, 'mode': 'auto'});
+      await disposeApp(tester);
+    });
+
+    testWidgets('manuell: ohne Rückfrage umstellen, jetzt bereinigen fragt nach und meldet die Zahl', (tester) async {
+      final backend = FakeBackend();
+      await _openManage(tester, backend);
+      await _scrollPanel(tester, find.byKey(const Key('cleanup')));
+      await tester.tap(find.byKey(const Key('cleanup')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('cleanup-run')), findsNothing);
+
+      await tester.tap(find.text('Manuell'));
+      await tester.pumpAndSettle();
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 12, 'mode': 'manual'});
+      // Nothing is deleted by a shorter period alone.
+      await tester.tap(find.text('1 Monat'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('endgültig gelöscht'), findsNothing);
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 1, 'mode': 'manual'});
+
+      await tester.scrollUntilVisible(find.byKey(const Key('cleanup-run')), 100,
+          scrollable: find.descendant(of: find.byType(ListView).last, matching: find.byType(Scrollable)).first);
+      await tester.tap(find.byKey(const Key('cleanup-run')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('jetzt für den ganzen Kreis endgültig gelöscht'), findsOneWidget);
+      await tester.tap(find.text('Abbrechen'));
+      await tester.pumpAndSettle();
+      expect(backend.writes.containsKey('POST /api/families/f1/calendar-cleanup/run'), isFalse);
+
+      await tester.tap(find.byKey(const Key('cleanup-run')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Bereinigen'));
+      await tester.pumpAndSettle();
+      expect(backend.writes.containsKey('POST /api/families/f1/calendar-cleanup/run'), isTrue);
+      expect(find.text('3 Termine gelöscht.'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ohne Admin gibt es keinen Knopf zum Bereinigen', (tester) async {
+      final member = FakeBackend()
+        ..isAdmin = false
+        ..cleanupMode = 'manual';
+      await _openManage(tester, member);
+      await _scrollPanel(tester, find.byKey(const Key('cleanup')));
+      expect(find.text('1 Jahr, manuell'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('cleanup')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('cleanup-run')), findsNothing);
+      await tester.tap(find.byKey(const Key('cleanup-enabled')));
+      await tester.pumpAndSettle();
+      expect(member.writes.containsKey('PUT /api/families/f1/calendar-cleanup'), isFalse);
       await disposeApp(tester);
     });
 
@@ -5982,7 +6072,7 @@ void calendarTests() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('2 Jahre'));
       await tester.pumpAndSettle();
-      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 24});
+      expect(backend.writes['PUT /api/families/f1/calendar-cleanup'], {'months': 24, 'mode': 'auto'});
       await disposeApp(tester);
 
       final member = FakeBackend()..isAdmin = false;

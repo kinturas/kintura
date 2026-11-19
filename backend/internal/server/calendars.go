@@ -340,11 +340,14 @@ func (s *Server) getCalendars(w http.ResponseWriter, r *http.Request, c reqCtx) 
 		return err
 	}
 	var cleanup int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT cleanup_months FROM families WHERE id = ?`, c.familyID).Scan(&cleanup); err != nil {
+	var cleanupMode string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT cleanup_months, cleanup_mode FROM families WHERE id = ?`, c.familyID).
+		Scan(&cleanup, &cleanupMode); err != nil {
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"calendars": calendars, "prefs": prefs, "countries": countries, "states": germanStates, "cleanup_months": cleanup,
+		"calendars": calendars, "prefs": prefs, "countries": countries, "states": germanStates,
+		"cleanup_months": cleanup, "cleanup_mode": cleanupMode,
 	})
 	return nil
 }
@@ -510,11 +513,15 @@ func (s *Server) putCalendar(w http.ResponseWriter, r *http.Request, c reqCtx) e
 	return noContent(w)
 }
 
-// putCleanup sets how long past events stay. It deletes for the whole family, so
-// it is up to its admins.
+// cleanupModes: every hour, only on request ("Jetzt bereinigen"), or never.
+var cleanupModes = []string{"auto", "manual", "off"}
+
+// putCleanup sets how long past events stay and when they are deleted. It deletes
+// for the whole family, so it is up to its admins. Without a mode the mode stays.
 func (s *Server) putCleanup(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	var in struct {
-		Months int `json:"months"`
+		Months int    `json:"months"`
+		Mode   string `json:"mode"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
@@ -522,37 +529,67 @@ func (s *Server) putCleanup(w http.ResponseWriter, r *http.Request, c reqCtx) er
 	if !slices.Contains(cleanupChoices, in.Months) {
 		return fail(http.StatusBadRequest, "Ungültiger Zeitraum")
 	}
-	if _, err := s.db.ExecContext(r.Context(), `UPDATE families SET cleanup_months = ? WHERE id = ?`, in.Months, c.familyID); err != nil {
+	if in.Mode != "" && !slices.Contains(cleanupModes, in.Mode) {
+		return fail(http.StatusBadRequest, "Ungültige Art der Bereinigung")
+	}
+	if _, err := s.db.ExecContext(r.Context(),
+		`UPDATE families SET cleanup_months = ?, cleanup_mode = CASE WHEN ? = '' THEN cleanup_mode ELSE ? END WHERE id = ?`,
+		in.Months, in.Mode, in.Mode, c.familyID); err != nil {
 		return err
 	}
 	return noContent(w)
 }
 
-// cleanupEvents deletes single events that ended before the limit of their family.
-// A series goes on and stays, since it has no end.
+// runCleanup deletes the old events of the family now, unless the cleanup is off.
+func (s *Server) runCleanup(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	var months int
+	var mode string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT cleanup_months, cleanup_mode FROM families WHERE id = ?`, c.familyID).
+		Scan(&months, &mode); err != nil {
+		return err
+	}
+	if mode == "off" {
+		return fail(http.StatusConflict, "Die Kalenderbereinigung ist ausgeschaltet")
+	}
+	deleted, err := s.cleanupFamily(r.Context(), c.familyID, months)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+	return nil
+}
+
+// cleanupEvents deletes the old events of the families whose cleanup runs on its own.
 func (s *Server) cleanupEvents(ctx context.Context) {
-	families, err := queryRows(ctx, s.db, `SELECT id, cleanup_months FROM families`)
+	families, err := queryRows(ctx, s.db, `SELECT id, cleanup_months FROM families WHERE cleanup_mode = 'auto'`)
 	if err != nil {
 		s.logError(nil, 0, "Kalenderbereinigung: "+err.Error())
 		return
 	}
 	for _, family := range families {
-		id := family["id"].(string)
-		cutoff := time.Now().UTC().AddDate(0, -int(family["cleanup_months"].(int64)), 0).Format(timeFormat)
-		files, err := queryRows(ctx, s.db,
-			`SELECT f.id FROM files f JOIN events e ON e.id = f.event_id WHERE e.family_id = ? AND e.recurrence = '' AND e.end_at < ?`, id, cutoff)
-		if err != nil {
+		if _, err := s.cleanupFamily(ctx, family["id"].(string), int(family["cleanup_months"].(int64))); err != nil {
 			s.logError(nil, 0, "Kalenderbereinigung: "+err.Error())
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE family_id = ? AND recurrence = '' AND end_at < ?`, id, cutoff); err != nil {
-			s.logError(nil, 0, "Kalenderbereinigung: "+err.Error())
-			continue
-		}
-		for _, file := range files {
-			s.removeStoredFile(nil, fileKey(id, file["id"].(string)))
 		}
 	}
+}
+
+// cleanupFamily deletes single events that ended more than the given months ago, with
+// their files, and tells how many. A series goes on and stays, since it has no end.
+func (s *Server) cleanupFamily(ctx context.Context, id string, months int) (int64, error) {
+	cutoff := time.Now().UTC().AddDate(0, -months, 0).Format(timeFormat)
+	files, err := queryRows(ctx, s.db,
+		`SELECT f.id FROM files f JOIN events e ON e.id = f.event_id WHERE e.family_id = ? AND e.recurrence = '' AND e.end_at < ?`, id, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE family_id = ? AND recurrence = '' AND end_at < ?`, id, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	for _, file := range files {
+		s.removeStoredFile(nil, fileKey(id, file["id"].(string)))
+	}
+	return res.RowsAffected()
 }
 
 // entryRange is what calendarEntries works on: the range as times and as dates.

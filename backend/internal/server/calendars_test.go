@@ -1698,3 +1698,59 @@ func TestCalendarCleanup(t *testing.T) {
 		t.Errorf("other family: %v", got)
 	}
 }
+
+func TestCalendarCleanupModes(t *testing.T) {
+	e := newEnv(t)
+	token := e.register("a@example.de", "A", "F")
+	fid := e.firstFamily(token)
+	base := "/api/families/" + fid
+	member, _ := e.addMember(fid, token, "b@example.de")
+
+	if mode := e.expect(200, "GET", base+"/calendars", token, nil)["cleanup_mode"]; mode != "auto" {
+		t.Errorf("default mode: %v", mode)
+	}
+	e.expect(400, "PUT", base+"/calendar-cleanup", token, obj{"months": 12, "mode": "sometimes"})
+	e.expect(403, "POST", base+"/calendar-cleanup/run", member, nil)
+
+	at := func(ago time.Duration) string { return time.Now().Add(-ago).Format(localTimeFormat) }
+	day := 24 * time.Hour
+	add := func(title string, ago time.Duration) {
+		e.expect(201, "POST", base+"/events", token, eventBody(obj{"title": title, "start_local": at(ago), "end_local": at(ago)}))
+	}
+	count := func() int {
+		var n int
+		if err := e.server.db.QueryRow(`SELECT COUNT(*) FROM events WHERE family_id = ?`, fid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	add("Alt", 400*day)
+	add("Neu", day)
+
+	// Off: the hourly run leaves everything, and nothing can be started by hand.
+	e.expect(204, "PUT", base+"/calendar-cleanup", token, obj{"months": 12, "mode": "off"})
+	e.server.cleanup(context.Background())
+	e.expect(409, "POST", base+"/calendar-cleanup/run", token, nil)
+	if n := count(); n != 2 {
+		t.Errorf("off: %d events", n)
+	}
+
+	// Manual: the hourly run leaves everything too, until an admin starts it.
+	e.expect(204, "PUT", base+"/calendar-cleanup", token, obj{"months": 12, "mode": "manual"})
+	e.server.cleanup(context.Background())
+	if n := count(); n != 2 {
+		t.Errorf("manual, hourly run: %d events", n)
+	}
+	if out := e.expect(200, "POST", base+"/calendar-cleanup/run", token, nil); out["deleted"] != float64(1) {
+		t.Errorf("run: %v", out)
+	}
+	if n := count(); n != 1 {
+		t.Errorf("manual, run: %d events", n)
+	}
+
+	// Without a mode the mode stays.
+	e.expect(204, "PUT", base+"/calendar-cleanup", token, obj{"months": 1})
+	if mode := e.expect(200, "GET", base+"/calendars", token, nil)["cleanup_mode"]; mode != "manual" {
+		t.Errorf("kept mode: %v", mode)
+	}
+}

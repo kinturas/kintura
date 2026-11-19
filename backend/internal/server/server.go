@@ -302,6 +302,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /api/families/{fid}/calendar-prefs", s.member(s.getCalendarPrefs))
 	mux.Handle("PUT /api/families/{fid}/calendar-prefs", s.member(s.putCalendarPrefs))
 	mux.Handle("PUT /api/families/{fid}/calendar-cleanup", s.admin(s.putCleanup))
+	mux.Handle("POST /api/families/{fid}/calendar-cleanup/run", s.admin(s.runCleanup))
 	mux.Handle("POST /api/families/{fid}/calendar-feeds", s.member(s.createFeed))
 	mux.Handle("POST /api/families/{fid}/calendar-feeds/{id}/refresh", s.member(s.refreshFeed))
 	mux.Handle("DELETE /api/families/{fid}/calendar-feeds/{id}", s.member(s.deleteFeed))

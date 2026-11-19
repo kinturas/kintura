@@ -48,6 +48,7 @@ enum FamilyType {
     'Familien-Chat',
     'Name der Familie',
     'aus der Familie',
+    'Meine Familie',
     Icons.family_restroom,
   ),
   friends(
@@ -55,6 +56,7 @@ enum FamilyType {
     'Freundeskreis-Chat',
     'Name des Freundeskreises',
     'aus dem Freundeskreis',
+    'Mein Freundeskreis',
     Icons.diversity_3,
   ),
   relatives(
@@ -62,6 +64,7 @@ enum FamilyType {
     'Verwandtschafts-Chat',
     'Name der Verwandtschaft',
     'aus der Verwandtschaft',
+    'Meine Verwandtschaft',
     Icons.groups_outlined,
   ),
   workgroup(
@@ -69,6 +72,7 @@ enum FamilyType {
     'Arbeitsgruppen-Chat',
     'Name der Arbeitsgruppe',
     'aus der Arbeitsgruppe',
+    'Meine Arbeitsgruppe',
     Icons.work_outline,
   );
 
@@ -77,6 +81,7 @@ enum FamilyType {
     this.chat,
     this.nameLabel,
     this.fromThe,
+    this.mine,
     this.icon,
   );
 
@@ -84,6 +89,9 @@ enum FamilyType {
   final String chat;
   final String nameLabel;
   final String fromThe;
+
+  /// The heading over the circle's own calendars.
+  final String mine;
   final IconData icon;
 
   bool get isFamily => this == FamilyType.family;
