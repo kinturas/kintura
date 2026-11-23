@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -11,9 +13,14 @@ import 'session.dart';
 import 'session_sync.dart';
 import 'shopping/shopping_outbox.dart';
 import 'live_updates.dart';
+import 'notifications/activity_notifier.dart';
+import 'screens/activity_screen.dart';
 import 'update_check.dart';
 
 const seedColor = Color(0xFF2E6B57);
+
+/// For what opens from outside a page, as a tapped notification.
+final appNavigator = GlobalKey<NavigatorState>();
 
 /// Every page, including its app bar and footer, stays this wide on large screens.
 const maxPageWidth = 960.0;
@@ -35,6 +42,8 @@ Future<void> main() async {
   session.start();
   SessionSync(session: session).start();
   LiveConnection(session: session).start();
+  activityNotifier = ActivityNotifier(session: session, onOpen: _openActivities);
+  unawaited(activityNotifier!.start());
   final updates = UpdateCheck(api: api, version: version)..start();
   runApp(KinturaApp(session: session, updates: updates));
 }
@@ -82,6 +91,7 @@ class KinturaApp extends StatelessWidget {
       child: ValueListenableBuilder(
         valueListenable: session.themeMode,
         builder: (context, themeMode, _) => MaterialApp(
+          navigatorKey: appNavigator,
           title: 'Kintura',
           debugShowCheckedModeBanner: false,
           themeMode: themeMode,
@@ -153,4 +163,11 @@ class _Root extends StatelessWidget {
       ),
     };
   }
+}
+
+/// Aktuelles, from a tapped notification; over what is open, once signed in.
+void _openActivities() {
+  final navigator = appNavigator.currentState;
+  if (navigator == null || activityNotifier?.session.status != SessionStatus.signedIn) return;
+  navigator.push(MaterialPageRoute<void>(builder: (_) => const ActivityScreen()));
 }

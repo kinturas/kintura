@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../common.dart';
+import '../notifications/activity_notifier.dart';
 import '../session.dart';
 import 'about_screen.dart';
 import 'email_code_dialog.dart';
@@ -63,7 +64,28 @@ class ProfileScreen extends StatelessWidget {
           onChanged: (on) => _setNotifications(context, on),
         ),
       ],
-      const _LaterTile(icon: Icons.tune, title: 'Benachrichtigungen verwalten'),
+      if (activityNotifier case final notifier? when notifier.notifications.supported)
+        ValueListenableBuilder(
+          valueListenable: notifier.enabled,
+          builder: (context, on, _) => SwitchListTile(
+            key: const Key('device-notifications'),
+            secondary: const Icon(Icons.notifications_active_outlined),
+            title: const Text('Benachrichtigungen auf diesem Gerät'),
+            subtitle: const Text('Neues aus Aktuelles, aus allen Kreisen, solange die App läuft'),
+            value: on,
+            onChanged: (want) async {
+              final messenger = ScaffoldMessenger.of(context);
+              if (!await notifier.setEnabled(want) && want) {
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Benachrichtigungen sind nicht erlaubt. Du kannst sie in den Einstellungen '
+                        'des Geräts oder Browsers für Kintura erlauben.'),
+                  ),
+                );
+              }
+            },
+          ),
+        ),
       ValueListenableBuilder(
         valueListenable: session.themeMode,
         builder: (context, themeMode, _) => Column(

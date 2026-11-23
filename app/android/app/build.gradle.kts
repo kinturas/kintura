@@ -13,10 +13,13 @@ plugins {
 
 android {
     namespace = "de.kintura.app"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_local_notifications needs 37; only what the build sees, targetSdk stays.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // flutter_local_notifications needs it, also without scheduled notifications.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -59,4 +62,8 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

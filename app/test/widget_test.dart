@@ -5,6 +5,8 @@ import 'package:kintura/api.dart';
 import 'package:kintura/common.dart';
 import 'package:kintura/main.dart';
 import 'package:kintura/offline_cache.dart';
+import 'package:kintura/notifications/activity_notifier.dart';
+import 'package:kintura/notifications/system_notifications.dart';
 import 'package:kintura/screens/avatar_crop_screen.dart';
 import 'package:kintura/screens/calendar_agenda.dart';
 import 'package:kintura/screens/dashboard_screen.dart';
@@ -1264,13 +1266,17 @@ void main() {
     }
 
     testWidgets('stehen in der gewünschten Reihenfolge nach dem Kreis-Profil', (tester) async {
+      final backend = FakeBackend();
+      final session = AppSession(api: ApiClient(client: backend.client, baseUrl: 'http://test'), tokens: MemoryTokens());
+      activityNotifier = ActivityNotifier(session: session, notifications: _SomeNotifications());
+      addTearDown(() => activityNotifier = null);
       await open(tester);
       double top(String text) => tester.getTopLeft(find.text(text).first).dy;
       final order = [
         'Dein Profil im Kreis Müller',
         'E-Mail-Adresse',
         'Mitteilungen erhalten',
-        'Benachrichtigungen verwalten',
+        'Benachrichtigungen auf diesem Gerät',
         'Dunkelmodus automatisch',
         'Hilfe',
         'Feedback',
@@ -1285,10 +1291,12 @@ void main() {
 
     testWidgets('was später kommt, ist ausgegraut', (tester) async {
       await open(tester);
-      for (final title in ['Benachrichtigungen verwalten', 'Hilfe', 'Sprache']) {
+      for (final title in ['Hilfe', 'Sprache']) {
         expect(tester.widget<ListTile>(find.widgetWithText(ListTile, title)).enabled, isFalse, reason: title);
       }
-      expect(find.text('Kommt später'), findsNWidgets(3));
+      expect(find.text('Kommt später'), findsNWidgets(2));
+      // Without notifications of the device, as here, no switch for them.
+      expect(find.byKey(const Key('device-notifications')), findsNothing);
       await disposeApp(tester);
     });
 
@@ -6369,3 +6377,21 @@ Map<String, Object?> calendarEntryRow(String title, DateTime start) => _entry(ti
 
 /// An event as the form loads it, for tests elsewhere.
 Map<String, Object?> eventDetailRow([Map<String, Object?> extra = const {}]) => _detail(extra);
+
+/// Notifications of a system that has them, for the switch in the profile.
+class _SomeNotifications implements SystemNotifications {
+  @override
+  bool get supported => true;
+
+  @override
+  Future<void> init(void Function(String payload) onTap) async {}
+
+  @override
+  Future<bool> allowed() async => true;
+
+  @override
+  Future<bool> requestPermission() async => true;
+
+  @override
+  Future<void> show({required int id, required String title, required String body, String payload = ''}) async {}
+}
