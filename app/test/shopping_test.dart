@@ -442,6 +442,28 @@ void main() {
       await disposeApp(tester);
     });
 
+    testWidgets('mit Verbindung kein Hinweis zwischendurch, die Suche steht unten', (tester) async {
+      final backend = FakeBackend()..shoppingLast = 's1';
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(find.byKey(const Key('shopping-search'))).dy,
+        greaterThan(tester.getBottomLeft(_list).dy - 1),
+      );
+
+      // While it is on its way, nothing comes and goes above the list.
+      await tester.tap(_tile('Milch'));
+      for (var i = 0; i < 5; i++) {
+        await tester.pump();
+        expect(find.byKey(const Key('shopping-waiting')), findsNothing);
+      }
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-waiting')), findsNothing);
+      expect(backend.writes['POST lists/s1/items/check'], {'name': 'Milch'});
+      await disposeApp(tester);
+    });
+
     testWidgets('ohne Verbindung abhaken und hinzufügen, mit Verbindung geht es raus', (tester) async {
       final backend = FakeBackend()..shoppingLast = 's1';
       final session = await pumpApp(tester, backend, MemoryTokens()..token = 't1', cache: MemoryResponseCache());

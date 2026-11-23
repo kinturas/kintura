@@ -369,8 +369,12 @@ func TestActivitiesOfAllFamilies(t *testing.T) {
 	if items, _ := all(ben, ""); activityKinds(items) != "event_added" || items[0]["own"] != false || items[0]["new"] != true {
 		t.Fatalf("ben: %v", items)
 	}
-	if n := e.expect(200, "GET", "/api/activities/unread", ben, nil)["count"]; n != float64(1) {
-		t.Fatalf("ben unread: %v", n)
+	if got := e.expect(200, "GET", "/api/activities/unread", ben, nil); got["count"] != float64(1) || got["families"].(obj)[fid] != float64(1) {
+		t.Fatalf("ben unread: %v", got)
+	}
+	// Anna's circles each by themselves, none with news.
+	if got := e.expect(200, "GET", "/api/activities/unread", owner, nil)["families"].(obj); len(got) != 2 || got[fid] != float64(0) || got[second] != float64(0) {
+		t.Fatalf("anna by circle: %v", got)
 	}
 	e.expect(204, "POST", "/api/activities/seen", ben, nil)
 	if n := e.expect(200, "GET", "/api/families/"+fid+"/activities/unread", ben, nil)["count"]; n != float64(0) {
@@ -445,5 +449,61 @@ func TestActivitiesOfCheckedOffArticles(t *testing.T) {
 	e.expect(200, "PUT", base+"/items/"+brot, ben, obj{"urgency": "", "done": false})
 	if items := all(owner); slices.ContainsFunc(items, func(a obj) bool { return a["kind"] == "items_done" }) {
 		t.Fatalf("all taken back: %v", items)
+	}
+}
+
+func TestActivitiesOfComments(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "Anna", "F")
+	fid := e.firstFamily(owner)
+	ben, benID := e.addMember(fid, owner, "b@example.de")
+	carl, carlID := e.addMember(fid, owner, "c@example.de")
+	dora, _ := e.addMember(fid, owner, "d@example.de")
+	base := "/api/families/" + fid
+	all := func(token string) []obj {
+		t.Helper()
+		var out struct {
+			Items []obj `json:"items"`
+		}
+		if err := e.getJSON("/api/activities", token, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Items
+	}
+	day := time.Now().AddDate(0, 0, 2).Format("2006-01-02")
+	id := e.expect(201, "POST", base+"/events", owner, obj{
+		"title": "Zahnarzt", "start_local": day + "T10:00", "end_local": day + "T11:00",
+		"participants_all": false, "participant_ids": []string{benID},
+	})["id"].(string)
+
+	// Carl sees it, though he takes no part, and comments: Anna made it, Ben takes part.
+	long := strings.Repeat("sehr ", 40) + "\n wichtig"
+	e.expect(201, "POST", base+"/events/"+id+"/comments", carl, obj{"body": long})
+	for _, token := range []string{owner, ben} {
+		got := all(token)[0]
+		names := toStrings(got["names"])
+		if got["kind"] != "event_comment" || got["ref_id"] != id || got["title"] != "Zahnarzt" || got["actor_id"] != carlID ||
+			len(names) != 1 || !strings.HasSuffix(names[0], " …") || strings.Contains(names[0], "\n") {
+			t.Fatalf("comment: %v", got)
+		}
+	}
+	if got := all(carl)[0]; got["kind"] != "event_comment" || got["own"] != true {
+		t.Fatalf("carl's own: %v", got)
+	}
+	if got := all(dora); len(got) != 0 {
+		t.Fatalf("dora has nothing to do with it: %v", got)
+	}
+
+	// Ben answers: Carl hears of it, having commented before.
+	e.expect(201, "POST", base+"/events/"+id+"/comments", ben, obj{"body": "Danke"})
+	if got := all(carl)[0]; got["kind"] != "event_comment" || strings.Join(toStrings(got["names"]), "") != "Danke" || got["own"] != false {
+		t.Fatalf("carl: %v", got)
+	}
+	// Older apps do not know it.
+	if legacy, _ := e.activities(owner, fid, ""); slices.ContainsFunc(legacy, func(a obj) bool { return a["kind"] == "event_comment" }) {
+		t.Fatalf("legacy: %v", legacy)
+	}
+	if n := e.expect(200, "GET", base+"/activities/unread", owner, nil)["count"]; n != float64(0) {
+		t.Fatalf("legacy unread: %v", n)
 	}
 }

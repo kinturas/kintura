@@ -13,6 +13,10 @@ import 'shopping_screen.dart';
 /// Counts up whenever Aktuelles was read, for the number on the tile to follow.
 final activitiesSeen = ValueNotifier(0);
 
+/// What others did in each circle since the user last looked, by circle; see
+/// [UnreadActivities], which keeps it up to date while the dashboard shows.
+final unreadByCircle = ValueNotifier(<String, int>{});
+
 /// Whether Aktuelles shows all circles of the user, as it does unless they chose only
 /// the one in view. Kept on the device, see [setActivitiesOfAllCircles].
 final activitiesOfAllCircles = ValueNotifier(true);
@@ -67,6 +71,7 @@ String activityText(Map<String, dynamic> activity) {
       'event_changed' => 'Du hast den Termin $title geändert.',
       'event_removed' => 'Du hast $people aus dem Termin $title herausgenommen.',
       'event_deleted' => 'Du hast den Termin $title gelöscht.',
+      'event_comment' => 'Du hast den Termin $title kommentiert${_quote(names)}.',
       'list_added' => 'Du hast $people zur Einkaufsliste $title hinzugefügt.',
       'list_all' => 'Du hast die Einkaufsliste $title für alle angelegt.',
       'list_deleted' => 'Du hast die Einkaufsliste $title gelöscht.',
@@ -86,6 +91,7 @@ String activityText(Map<String, dynamic> activity) {
     'event_changed' => '$who hat den Termin $title geändert.',
     'event_removed' => '$who hat dich aus dem Termin $title herausgenommen.',
     'event_deleted' => '$who hat den Termin $title gelöscht.',
+    'event_comment' => '$who hat den Termin $title kommentiert${_quote(names)}.',
     'list_added' => '$who hat dich zur Einkaufsliste $title hinzugefügt.',
     'list_all' => '$who hat die Einkaufsliste $title für alle angelegt.',
     'list_deleted' => '$who hat die Einkaufsliste $title gelöscht.',
@@ -97,6 +103,9 @@ String activityText(Map<String, dynamic> activity) {
     _ => '$who hat etwas geändert.',
   };
 }
+
+/// What a comment says, after a colon; nothing if the server sent none.
+String _quote(List<String> names) => names.isEmpty || names.first.isEmpty ? '' : ': „${names.first}“';
 
 String _shortList(List<String> names, int count) {
   const shown = 4;
@@ -150,13 +159,14 @@ IconData _iconOf(String kind) => switch (kind) {
   'list_readable' => Icons.visibility_outlined,
   'list_added' || 'list_all' || 'list_deleted' => Icons.shopping_cart_outlined,
   'event_deleted' || 'event_removed' => Icons.event_busy,
+  'event_comment' => Icons.chat_bubble_outline,
   _ => Icons.event,
 };
 
 bool _opensList(String kind) => const {'items_added', 'items_done', 'list_added', 'list_all', 'list_readable'}.contains(kind);
 
 /// Kinds about an event that is still there to open.
-bool _opensEvent(String kind) => const {'event_added', 'event_all', 'event_changed', 'event_removed'}.contains(kind);
+bool _opensEvent(String kind) => const {'event_added', 'event_all', 'event_changed', 'event_removed', 'event_comment'}.contains(kind);
 
 /// Whether entries carry the circle they belong to: only if more than one is in view.
 bool _showsCircles(AppSession session) => activitiesOfAllCircles.value && session.families.length > 1;
@@ -845,16 +855,25 @@ class _UnreadActivitiesState extends State<UnreadActivities> with LiveReload {
 
   void _scopeChanged() {
     if (!mounted) return;
-    listenLive(_activityTopics, _load, everyFamily: activitiesOfAllCircles.value);
+    // Every circle, for the numbers in the circle menu too.
+    listenLive(_activityTopics, _load, everyFamily: true);
     _load();
   }
 
+  /// One request for all circles: the tile shows what is in view, the circle menu each.
   Future<void> _load() async {
     final session = SessionScope.of(context);
-    if (session.current == null) return;
+    final current = session.current?.id;
+    if (current == null) return;
     try {
-      final result = await session.api.get(_activitiesPath(session, '/api/activities/unread')) as Map<String, dynamic>;
-      if (mounted) setState(() => _count = (result['count'] as num?)?.toInt() ?? 0);
+      final result = await session.api.get('/api/activities/unread') as Map<String, dynamic>;
+      final byCircle = {
+        for (final MapEntry(:key, :value) in (result['families'] as Map<String, dynamic>? ?? const {}).entries)
+          key: (value as num).toInt(),
+      };
+      unreadByCircle.value = byCircle;
+      final total = (result['count'] as num?)?.toInt() ?? 0;
+      if (mounted) setState(() => _count = activitiesOfAllCircles.value ? total : byCircle[current] ?? total);
     } on ApiException {
       // Without the number the tile still works.
     }

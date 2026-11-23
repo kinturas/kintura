@@ -331,10 +331,29 @@ func (s *Server) addEventComment(w http.ResponseWriter, r *http.Request, c reqCt
 	if err != nil {
 		return err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	id := newID()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO event_comments (id, event_id, user_id, body, created_at, seq)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO event_comments (id, event_id, user_id, body, created_at, seq)
 		 VALUES (?1, ?2, ?3, ?4, ?5, (SELECT COALESCE(MAX(seq), 0) + 1 FROM event_comments WHERE event_id = ?2))`,
 		id, eventID, c.userID, body, now()); err != nil {
+		return err
+	}
+	var title string
+	if err := tx.QueryRowContext(ctx, `SELECT title FROM events WHERE id = ?`, eventID).Scan(&title); err != nil {
+		return err
+	}
+	people, err := commentPeople(ctx, tx, c.familyID, eventID)
+	if err != nil {
+		return err
+	}
+	if err := addActivityWith(ctx, tx, c.familyID, c.userID, activityEventComment, eventID, title, commentSnippet(body), people); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	rows, err := queryRows(ctx, s.db, eventCommentColumns+`WHERE c.id = ?`, c.familyID, id)

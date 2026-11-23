@@ -343,7 +343,21 @@ class _FamilySwitcher extends StatelessWidget {
           CheckedPopupMenuItem(
             value: family.id,
             checked: family.id == session.current?.id,
-            child: Text(family.name),
+            child: Row(
+              children: [
+                Expanded(child: Text(family.name, overflow: TextOverflow.ellipsis)),
+                // What others did there since one last looked, as on the tile of Aktuelles.
+                if (unreadByCircle.value[family.id] case final count? when count > 0) ...[
+                  const SizedBox(width: 12),
+                  Badge(
+                    key: Key('circle-unread-${family.id}'),
+                    label: Text(count > 99 ? '99+' : '$count'),
+                    largeSize: 20,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                  ),
+                ],
+              ],
+            ),
           ),
         // Whoever makes a circle is its admin, and that takes an address.
         if (!session.isManaged) ...[

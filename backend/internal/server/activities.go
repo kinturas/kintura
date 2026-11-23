@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"slices"
 	"strconv"
@@ -25,6 +26,8 @@ const (
 	activityListReadable = "list_readable" // a shopping list was made visible to you, read-only
 	activityItemsAdded   = "items_added"   // articles were put on a shopping list of yours
 	activityItemsDone    = "items_done"    // articles were checked off a shopping list of yours
+	activityEventComment = "event_comment" // an event of yours was commented on; detail is the start of it
+	maxCommentInActivity = 120             // characters of a comment that Aktuelles shows
 	activityPageSize     = 20
 	maxActivityPageSize  = 100
 	activityKeepDays     = 90
@@ -54,6 +57,11 @@ func familyMemberIDs(ctx context.Context, q dbtx, familyID string) ([]string, er
 // what they did. Where it is about people, the actor's entry names them, and there is
 // none if it concerns nobody else.
 func addActivity(ctx context.Context, tx dbtx, familyID, actorID, kind, refID, title string, recipients []string) error {
+	return addActivityWith(ctx, tx, familyID, actorID, kind, refID, title, "", recipients)
+}
+
+// addActivityWith is addActivity with a detail for everyone, such as what a comment says.
+func addActivityWith(ctx context.Context, tx dbtx, familyID, actorID, kind, refID, title, detail string, recipients []string) error {
 	t := activityNow()
 	var others []string
 	for _, userID := range unique(recipients) {
@@ -62,16 +70,16 @@ func addActivity(ctx context.Context, tx dbtx, familyID, actorID, kind, refID, t
 		}
 		others = append(others, userID)
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO activities (id, family_id, user_id, actor_id, kind, ref_id, title, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			newID(), familyID, userID, nullable(actorID), kind, refID, title, t, t); err != nil {
+			`INSERT INTO activities (id, family_id, user_id, actor_id, kind, ref_id, title, detail, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			newID(), familyID, userID, nullable(actorID), kind, refID, title, detail, t, t); err != nil {
 			return err
 		}
 	}
 	if actorID == "" {
 		return nil
 	}
-	detail, count := "", 1
+	count := 1
 	if activityAboutPeople[kind] {
 		if len(others) == 0 {
 			return nil
@@ -330,7 +338,7 @@ func (s *Server) activityPage(r *http.Request, userID string, families []string,
 		args = append(args, id)
 	}
 	if !withOwn {
-		where += ` AND COALESCE(a.actor_id, '') <> a.user_id AND a.kind <> '` + activityItemsDone + `'`
+		where += ` AND COALESCE(a.actor_id, '') <> a.user_id` + legacyKinds
 	}
 	// The cursor is the time and id of the last entry of the page before.
 	if before := query.Get("before"); before != "" {
@@ -375,7 +383,7 @@ func (s *Server) activityPage(r *http.Request, userID string, families []string,
 
 // unreadActivities is GET /families/{fid}/activities/unread, for the number on the tile.
 func (s *Server) unreadActivities(w http.ResponseWriter, r *http.Request, c reqCtx) error {
-	return s.writeUnread(w, r, c.userID, []string{c.familyID})
+	return s.writeUnread(w, r, c.userID, []string{c.familyID}, true)
 }
 
 // unreadAllActivities is GET /activities/unread: the same over all families, or the
@@ -385,25 +393,31 @@ func (s *Server) unreadAllActivities(w http.ResponseWriter, r *http.Request, c r
 	if err != nil {
 		return err
 	}
-	return s.writeUnread(w, r, c.userID, families)
+	return s.writeUnread(w, r, c.userID, families, false)
 }
 
-// writeUnread counts what others did since the user last looked, family by family.
-func (s *Server) writeUnread(w http.ResponseWriter, r *http.Request, userID string, families []string) error {
+// writeUnread counts what others did since the user last looked, family by family:
+// the sum as count, and for each family by itself. legacy leaves out what older apps
+// do not show, see listActivities.
+func (s *Server) writeUnread(w http.ResponseWriter, r *http.Request, userID string, families []string, legacy bool) error {
+	query := `SELECT COUNT(*) FROM activities a
+		 LEFT JOIN activity_seen seen ON seen.family_id = a.family_id AND seen.user_id = a.user_id
+		 WHERE a.family_id = ? AND a.user_id = ? AND a.updated_at > COALESCE(seen.seen_at, '')
+		   AND COALESCE(a.actor_id, '') <> a.user_id`
+	if legacy {
+		query += legacyKinds
+	}
 	total := 0
+	byFamily := map[string]int{}
 	for _, familyID := range families {
 		var count int
-		if err := s.db.QueryRowContext(r.Context(),
-			`SELECT COUNT(*) FROM activities a
-			 LEFT JOIN activity_seen seen ON seen.family_id = a.family_id AND seen.user_id = a.user_id
-			 WHERE a.family_id = ? AND a.user_id = ? AND a.updated_at > COALESCE(seen.seen_at, '')
-			   AND COALESCE(a.actor_id, '') <> a.user_id`,
-			familyID, userID).Scan(&count); err != nil {
+		if err := s.db.QueryRowContext(r.Context(), query, familyID, userID).Scan(&count); err != nil {
 			return err
 		}
 		total += count
+		byFamily[familyID] = count
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"count": total})
+	writeJSON(w, http.StatusOK, map[string]any{"count": total, "families": byFamily})
 	return nil
 }
 
@@ -580,4 +594,48 @@ func shoppingListReaders(ctx context.Context, q dbtx, familyID, listID string, p
 		return nil, err
 	}
 	return minus(members, people), nil
+}
+
+// legacyKinds leaves out the kinds that came after the apps that still ask a family's
+// own endpoints: they would word them as "hat etwas geändert".
+const legacyKinds = ` AND a.kind NOT IN ('` + activityItemsDone + `', '` + activityEventComment + `')`
+
+// commentPeople is whom a comment concerns: those who take part in the event, its
+// creator and whoever commented on it before.
+func commentPeople(ctx context.Context, q dbtx, familyID, eventID string) ([]string, error) {
+	var everyone bool
+	var creator sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT participants_all, created_by FROM events WHERE id = ? AND family_id = ?`, eventID, familyID).
+		Scan(&everyone, &creator); err != nil {
+		return nil, err
+	}
+	people, err := eventPeople(ctx, q, familyID, eventID, everyone)
+	if err != nil {
+		return nil, err
+	}
+	if creator.Valid {
+		people = append(people, creator.String)
+	}
+	rows, err := queryRows(ctx, q, `SELECT DISTINCT user_id FROM event_comments WHERE event_id = ?`, eventID)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		people = append(people, row["user_id"].(string))
+	}
+	// Only who is still in the family.
+	members, err := familyMemberIDs(ctx, q, familyID)
+	if err != nil {
+		return nil, err
+	}
+	return both(people, members), nil
+}
+
+// commentSnippet is the start of a comment, on one line, for Aktuelles.
+func commentSnippet(body string) string {
+	text := strings.Join(strings.Fields(body), " ")
+	if runes := []rune(text); len(runes) > maxCommentInActivity {
+		return strings.TrimSpace(string(runes[:maxCommentInActivity])) + " …"
+	}
+	return text
 }

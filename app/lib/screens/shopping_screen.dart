@@ -567,8 +567,8 @@ class _ListFormScreenState extends State<_ListFormScreen> {
   }
 }
 
-/// One shopping list: a search on top, the articles on the list, the ones used lately
-/// and all articles by category. A tap puts an article on the list or checks it off,
+/// One shopping list: the articles on the list, the ones used lately and all articles
+/// by category, with a search at the bottom. A tap puts an article on the list or checks it off,
 /// a long press opens its page.
 class ShoppingListScreen extends StatefulWidget {
   const ShoppingListScreen({super.key, required this.list, required this.lists, this.onShowLists});
@@ -608,11 +608,26 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
   late final String _family = SessionScope.of(context).current!.id;
   int _waiting = 0;
 
+  /// Whether to tell that changes wait for a connection. Not while they are only on
+  /// their way, which takes a moment with every tap: the note would come and go and
+  /// push the list down and up again.
+  bool _showWaiting = false;
+
+  /// Counts up with every change made here and every one that reached the server. An
+  /// answer to a request from before is older than what shows, and is dropped.
+  int _changes = 0;
+
   /// Once what waited has reached the server, the list shows the server's state again.
   void _outboxChanged() {
     final waiting = _outbox.waitingFor(_family, _list['id'] as String);
     final sent = waiting < _waiting;
-    if (waiting != _waiting) setState(() => _waiting = waiting);
+    if (sent) _changes++;
+    if (waiting != _waiting || (waiting == 0 && _showWaiting)) {
+      setState(() {
+        _waiting = waiting;
+        if (waiting == 0) _showWaiting = false;
+      });
+    }
     if (sent) _load(articles: false);
   }
 
@@ -623,6 +638,8 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _outbox.changes.addListener(_outboxChanged);
       _outboxChanged();
+      // Waiting from before, as when the app was closed offline.
+      if (_waiting > 0) setState(() => _showWaiting = true);
       _remember();
       _load();
       listenLive(const {'shopping'}, () {
@@ -648,12 +665,15 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
   Future<void> _load({bool articles = true}) async {
     final api = SessionScope.of(context).api;
     final base = _base;
+    final changes = _changes;
     try {
       final results = await Future.wait([
         api.get('$base/lists/${_list['id']}/items'),
         if (articles || _articles == null) api.get('$base/articles'),
       ]);
-      if (!mounted) return;
+      // Asked before the last change got through: it would show the list without it
+      // for a moment. The load that came with the change follows.
+      if (!mounted || (changes != _changes && _articles != null)) return;
       setState(() {
         // From the server or, offline, from the device: either way with what still waits.
         _items = _outbox.apply(_family, _list['id'] as String, (results[0] as List).cast<Map<String, dynamic>>());
@@ -692,6 +712,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       done: done,
       newArticle: newArticle,
     );
+    _changes++;
     await _outbox.put(change);
     if (!mounted) return;
     setState(() => _items = _outbox.apply(_family, _list['id'] as String, _items));
@@ -699,7 +720,10 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     for (final message in refused) {
       messenger.showSnackBar(SnackBar(content: Text(message)));
     }
-    if (mounted) await _load(articles: false);
+    if (!mounted) return;
+    // Still there after sending: now it really waits for a connection.
+    if (_outbox.waitingFor(_family, _list['id'] as String) > 0) setState(() => _showWaiting = true);
+    await _load(articles: false);
   }
 
   Future<void> _add(String name) => _set(name, done: false);
@@ -776,7 +800,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
           ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
           : Column(
               children: [
-                if (_waiting > 0)
+                if (_showWaiting && _waiting > 0)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: Row(
@@ -808,10 +832,18 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
                         subtitle: Text(_readOnlyHint),
                       ),
                     ),
-                  )
-                else
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  ),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _load,
+                    child: _search.text.trim().isEmpty ? _overview(articles) : _results(articles),
+                  ),
+                ),
+                // At the bottom, where the thumb is; the keyboard pushes it up.
+                if (!_readOnly)
+                  SafeArea(
+                    top: false,
+                    minimum: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                     child: TextField(
                       key: const Key('shopping-search'),
                       controller: _search,
@@ -838,12 +870,6 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
                       },
                     ),
                   ),
-                Expanded(
-                  child: RefreshIndicator(
-                    onRefresh: _load,
-                    child: _search.text.trim().isEmpty ? _overview(articles) : _results(articles),
-                  ),
-                ),
               ],
             ),
     );
@@ -953,7 +979,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
             child: Text(
               _readOnly
                   ? 'Auf der Liste steht gerade nichts.'
-                  : 'Die Liste ist leer. Suche oben oder tippe unten auf einen Artikel.',
+                  : 'Die Liste ist leer. Suche unten oder tippe auf einen Artikel.',
               textAlign: TextAlign.center,
               style: text.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),

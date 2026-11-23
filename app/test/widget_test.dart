@@ -507,7 +507,10 @@ class FakeBackend {
         response = _shoppingWrite(request.method, path, body, request.url.queryParameters);
       case '/api/activities/unread':
         activityQueries.add(request.url.query);
-        response = {'count': activitiesUnread};
+        response = {
+          'count': activitiesUnread + unreadElsewhere.values.fold(0, (a, b) => a + b),
+          'families': {'f1': activitiesUnread, ...unreadElsewhere},
+        };
       case '/api/activities/upcoming':
         activityQueries.add(request.url.query);
         final family = request.url.queryParameters['family'];
@@ -517,6 +520,7 @@ class FakeBackend {
       case '/api/activities/seen':
         activityQueries.add(request.url.query);
         activitiesUnread = 0;
+        if (request.url.queryParameters['family'] == null) unreadElsewhere = {};
         for (final a in activities) {
           a['new'] = false;
         }
@@ -564,6 +568,9 @@ class FakeBackend {
   String shoppingLast = '';
 
   int activitiesUnread = 0;
+
+  /// Unread in the circles of [extraFamilies], by circle.
+  Map<String, int> unreadElsewhere = {};
   List<Map<String, Object?>> upcoming = [];
   List<Map<String, Object?>> activities = [];
 

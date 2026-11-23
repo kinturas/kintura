@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -77,6 +78,12 @@ void main() {
       expect(own('event_all'), 'Du hast den Termin „X“ für alle angelegt.');
       expect(own('list_deleted'), 'Du hast die Einkaufsliste „X“ gelöscht.');
       expect(own('items_done', names: ['Milch']), 'Du hast Milch auf „X“ abgehakt.');
+      expect(own('event_comment', names: ['Bin dabei']), 'Du hast den Termin „X“ kommentiert: „Bin dabei“.');
+      expect(
+        activityText({'kind': 'event_comment', 'actor_name': 'Ben', 'title': 'X', 'names': ['Komme später'], 'count': 1}),
+        'Ben hat den Termin „X“ kommentiert: „Komme später“.',
+      );
+      expect(activityText({'kind': 'event_comment', 'actor_name': 'Ben', 'title': 'X'}), 'Ben hat den Termin „X“ kommentiert.');
       expect(
         activityText({'kind': 'items_done', 'actor_name': 'Ben', 'title': 'X', 'names': ['Milch', 'Brot'], 'count': 2}),
         'Ben hat 2 Artikel auf „X“ abgehakt: Milch, Brot.',
@@ -185,6 +192,37 @@ void main() {
       await disposeApp(tester);
     });
 
+    testWidgets('das Kreis-Menü zeigt je Kreis, was es Neues gibt', (tester) async {
+      final backend = FakeBackend()
+        ..extraFamilies.add({'id': 'f2', 'name': 'Kegelclub', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': ''})
+        ..extraFamilies.add({'id': 'f3', 'name': 'Chor', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': ''})
+        ..activitiesUnread = 2
+        ..unreadElsewhere = {'f2': 3, 'f3': 0};
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      // The tile counts all circles.
+      expect(find.descendant(of: find.byKey(const Key('activities-unread')), matching: find.text('5')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Kreis wechseln'));
+      await tester.pumpAndSettle();
+      expect(find.descendant(of: find.byKey(const Key('circle-unread-f1')), matching: find.text('2')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('circle-unread-f2')), matching: find.text('3')), findsOneWidget);
+      expect(find.byKey(const Key('circle-unread-f3')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      // Read in Aktuelles: gone everywhere.
+      await tester.tap(find.text('Aktuelles'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Kreis wechseln'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('circle-unread-f2')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await disposeApp(tester);
+    });
+
     testWidgets('alle Kreise mit ihrem Namen, oder nur der aktuelle', (tester) async {
       final backend = FakeBackend()
         ..extraFamilies.add({
@@ -213,7 +251,7 @@ void main() {
       expect(find.textContaining('Vereinsheim'), findsNothing);
       expect(find.text('Du hast Milch auf „Wocheneinkauf“ gesetzt.'), findsOneWidget);
       expect(find.byKey(const ValueKey('circle-f1')), findsNothing);
-      expect(backend.activityQueries.last, 'family=f1');
+      expect(backend.activityQueries, contains('family=f1'));
 
       // Back to all, for the tests after this one.
       await tester.tap(find.byKey(const Key('activities-filter')));
