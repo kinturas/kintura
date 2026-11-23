@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
 import '../api.dart';
@@ -12,6 +13,7 @@ import '../session.dart';
 import '../shopping/shopping_catalog.dart';
 import '../shopping/shopping_icons.dart';
 import '../shopping/shopping_outbox.dart';
+import 'comment_tile.dart';
 
 /// How urgent an article is, as the server keeps it; empty is no mark.
 const _urgencies = {
@@ -33,9 +35,12 @@ Color _listColor(BuildContext context, Map<String, dynamic> list) {
 /// page; back from all lists goes to the list one came from, and leaves the page only
 /// when there is none.
 class ShoppingScreen extends StatefulWidget {
-  const ShoppingScreen({super.key, this.listId});
+  const ShoppingScreen({super.key, this.listId, this.showComments = false});
 
   final String? listId;
+
+  /// Opens the comments of [listId] over the list.
+  final bool showComments;
 
   @override
   State<ShoppingScreen> createState() => _ShoppingScreenState();
@@ -102,7 +107,13 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
   static Map<String, dynamic>? _find(List<dynamic> lists, String? id) =>
       lists.cast<Map<String, dynamic>>().where((l) => l['id'] == id).firstOrNull;
 
-  void _showAll() => setState(() => _showsAll = true);
+  /// Whether the comments asked for were shown; the list opened again does not open them.
+  bool _commentsShown = false;
+
+  void _showAll() => setState(() {
+    _showsAll = true;
+    _commentsShown = true;
+  });
 
   void _show(Map<String, dynamic> list, List<dynamic> lists) => setState(() {
     _lists = lists;
@@ -142,6 +153,8 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
         list: list,
         lists: _lists,
         onShowLists: _showAll,
+        // Only the first time; not again when coming back from all lists.
+        showComments: widget.showComments && list['id'] == widget.listId && !_commentsShown,
       );
     }
     return PopScope(
@@ -571,9 +584,18 @@ class _ListFormScreenState extends State<_ListFormScreen> {
 /// by category, with a search at the bottom. A tap puts an article on the list or checks it off,
 /// a long press opens its page.
 class ShoppingListScreen extends StatefulWidget {
-  const ShoppingListScreen({super.key, required this.list, required this.lists, this.onShowLists});
+  const ShoppingListScreen({
+    super.key,
+    required this.list,
+    required this.lists,
+    this.onShowLists,
+    this.showComments = false,
+  });
 
   final Map<String, dynamic> list;
+
+  /// Opens the comments right away, over the list.
+  final bool showComments;
 
   /// All lists one may see, to move articles between them.
   final List<dynamic> lists;
@@ -645,6 +667,8 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       listenLive(const {'shopping'}, () {
         if (!_paused) _load();
       });
+      // From a comment in Aktuelles: the comments over the list, so back leads here.
+      if (widget.showComments) _showComments();
     });
     // Others shop with the same list. With a live connection the server tells of their
     // changes; without one this keeps it fresh.
@@ -776,6 +800,16 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       appBar: AppBar(
         title: Text(_list['name'] as String),
         actions: [
+          IconButton(
+            key: const Key('shopping-comments'),
+            tooltip: 'Kommentare',
+            icon: Badge(
+              isLabelVisible: (_list['comment_count'] as num? ?? 0) > 0,
+              label: Text('${_list['comment_count'] ?? 0}'),
+              child: const Icon(Icons.chat_bubble_outline),
+            ),
+            onPressed: _showComments,
+          ),
           if (_list['can_edit'] == true)
             IconButton(
               key: const Key('shopping-edit-list'),
@@ -933,6 +967,22 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
       await session.api.put('$_base/last', {'list_id': _list['id']});
     } on ApiException {
       // Next time the overview comes first; nothing lost.
+    }
+  }
+
+  Future<void> _showComments() async {
+    final session = SessionScope.of(context);
+    _paused = true;
+    await Navigator.of(context).push<void>(MaterialPageRoute(builder: (_) => ShoppingCommentsScreen(list: _list)));
+    _paused = false;
+    if (!mounted) return;
+    // For the number on the button.
+    try {
+      final lists = (await session.api.get('$_base/lists') as List).cast<Map<String, dynamic>>();
+      final updated = lists.where((l) => l['id'] == _list['id']).firstOrNull;
+      if (mounted && updated != null) setState(() => _list = updated);
+    } on ApiException {
+      // The number stays as it was.
     }
   }
 
@@ -1794,6 +1844,151 @@ class _PhotoScreen extends StatelessWidget {
         builder: (context, snapshot) => snapshot.hasData
             ? InteractiveViewer(child: Center(child: Image.memory(snapshot.data!)))
             : const Center(child: CircularProgressIndicator()),
+      ),
+    );
+  }
+}
+
+/// The comments on a shopping list, the oldest first, with a field to add one at the
+/// bottom. Whoever sees the list may comment, also on a list only to look at.
+class ShoppingCommentsScreen extends StatefulWidget {
+  const ShoppingCommentsScreen({super.key, required this.list});
+
+  final Map<String, dynamic> list;
+
+  @override
+  State<ShoppingCommentsScreen> createState() => _ShoppingCommentsScreenState();
+}
+
+class _ShoppingCommentsScreenState extends State<ShoppingCommentsScreen> with LiveReload {
+  final _comment = TextEditingController();
+  final _scroll = ScrollController();
+  List<Map<String, dynamic>>? _comments;
+  String? _error;
+  bool _sending = false;
+  bool _started = false;
+
+  String get _path => '${SessionScope.of(context).familyPath}/shopping/lists/${widget.list['id']}/comments';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    _load();
+    listenLive(const {'shopping'}, _load);
+  }
+
+  @override
+  void dispose() {
+    _comment.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final session = SessionScope.of(context);
+    try {
+      final rows = (await session.api.get(_path) as List).cast<Map<String, dynamic>>();
+      if (!mounted) return;
+      final grew = rows.length > (_comments?.length ?? 0);
+      setState(() {
+        _comments = rows;
+        _error = null;
+      });
+      // The newest are at the bottom, next to the field.
+      if (grew) WidgetsBinding.instance.addPostFrameCallback((_) => _toEnd());
+    } on ApiException catch (e) {
+      if (mounted && _comments == null) setState(() => _error = e.message);
+    }
+  }
+
+  void _toEnd() {
+    if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  Future<void> _send() async {
+    final body = _comment.text.trim();
+    if (body.isEmpty || _sending) return;
+    final session = SessionScope.of(context);
+    setState(() => _sending = true);
+    final ok = await guarded(context, () => session.api.post(_path, {'body': body}));
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (!ok) return;
+    _comment.clear();
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final comments = _comments;
+    final text = Theme.of(context).textTheme;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Kommentare: ${widget.list['name']}'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(4),
+          child: Container(height: 4, color: _listColor(context, widget.list)),
+        ),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: comments == null
+                ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
+                : RefreshIndicator(
+                    onRefresh: _load,
+                    child: ListView(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                      children: [
+                        if (comments.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: Text(
+                              'Noch keine Kommentare. Schreib etwas für alle, die diese Liste sehen.',
+                              textAlign: TextAlign.center,
+                              style: text.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                            ),
+                          ),
+                        for (final comment in comments)
+                          CommentTile(comment: comment, path: _path, onChanged: _load),
+                      ],
+                    ),
+                  ),
+          ),
+          SafeArea(
+            top: false,
+            minimum: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: CallbackShortcuts(
+              // On a keyboard, Enter starts a new line and Shift + Enter sends.
+              bindings: {
+                const SingleActivator(LogicalKeyboardKey.enter, shift: true): _send,
+                const SingleActivator(LogicalKeyboardKey.numpadEnter, shift: true): _send,
+              },
+              child: TextField(
+                key: const Key('shopping-comment'),
+                controller: _comment,
+                minLines: 1,
+                maxLines: 5,
+                maxLength: 2000,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: InputDecoration(
+                  labelText: 'Kommentar',
+                  border: const OutlineInputBorder(),
+                  counterText: '',
+                  suffixIcon: IconButton(
+                    key: const Key('shopping-comment-send'),
+                    tooltip: 'Kommentar senden',
+                    icon: const Icon(Icons.send),
+                    onPressed: _sending ? null : _send,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

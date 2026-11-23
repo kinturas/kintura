@@ -79,11 +79,34 @@ void main() {
       expect(own('list_deleted'), 'Du hast die Einkaufsliste „X“ gelöscht.');
       expect(own('items_done', names: ['Milch']), 'Du hast Milch auf „X“ abgehakt.');
       expect(own('event_comment', names: ['Bin dabei']), 'Du hast den Termin „X“ kommentiert: „Bin dabei“.');
+      expect(own('list_comment', names: ['Bringe Salat']), 'Du hast die Einkaufsliste „X“ kommentiert: „Bringe Salat“.');
+      expect(
+        activityText({'kind': 'list_comment', 'actor_name': 'Ben', 'title': 'X', 'names': ['Super'], 'count': 1}),
+        'Ben hat die Einkaufsliste „X“ kommentiert: „Super“.',
+      );
       expect(
         activityText({'kind': 'event_comment', 'actor_name': 'Ben', 'title': 'X', 'names': ['Komme später'], 'count': 1}),
         'Ben hat den Termin „X“ kommentiert: „Komme später“.',
       );
       expect(activityText({'kind': 'event_comment', 'actor_name': 'Ben', 'title': 'X'}), 'Ben hat den Termin „X“ kommentiert.');
+
+      // Changed and deleted comments.
+      expect(own('event_comment_edited', names: ['Bin später da']),
+          'Du hast deinen Kommentar zum Termin „X“ bearbeitet: „Bin später da“.');
+      expect(own('list_comment_deleted'), 'Du hast deinen Kommentar zur Einkaufsliste „X“ gelöscht.');
+      expect(own('event_comment_deleted', names: ['Ben']), 'Du hast den Kommentar von Ben zum Termin „X“ gelöscht.');
+      expect(
+        activityText({'kind': 'list_comment_edited', 'actor_name': 'Ben', 'title': 'X', 'names': ['Doch Käse'], 'count': 1}),
+        'Ben hat einen Kommentar zur Einkaufsliste „X“ bearbeitet: „Doch Käse“.',
+      );
+      expect(
+        activityText({'kind': 'event_comment_deleted', 'actor_name': 'Ben', 'title': 'X', 'names': <String>[], 'count': 0}),
+        'Ben hat einen Kommentar zum Termin „X“ gelöscht.',
+      );
+      expect(
+        activityText({'kind': 'list_comment_deleted', 'actor_name': 'Anna', 'title': 'X', 'names': ['Ben'], 'count': 1}),
+        'Anna hat den Kommentar von Ben zur Einkaufsliste „X“ gelöscht.',
+      );
       expect(
         activityText({'kind': 'items_done', 'actor_name': 'Ben', 'title': 'X', 'names': ['Milch', 'Brot'], 'count': 2}),
         'Ben hat 2 Artikel auf „X“ abgehakt: Milch, Brot.',
@@ -152,6 +175,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('activities-unread')), findsNothing);
       expect(tester.takeException(), isNull);
+      await disposeApp(tester);
+    });
+
+    testWidgets('ein Kommentar zu einer Einkaufsliste öffnet die Kommentare', (tester) async {
+      final backend = FakeBackend()
+        ..activities = [_activity('a1', 'list_comment', 'Wocheneinkauf', names: ['Bitte Käse'])]
+        ..shoppingComments.add({
+          'id': 'c0', 'body': 'Bitte Käse', 'created_at': '2026-11-22T09:00:00Z', 'author_id': 'u2', 'author_name': 'Ben',
+        });
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Aktuelles'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ben hat die Einkaufsliste „Wocheneinkauf“ kommentiert: „Bitte Käse“.'));
+      await tester.pumpAndSettle();
+      expect(find.text('Kommentare: Wocheneinkauf'), findsOneWidget);
+      expect(find.text('Bitte Käse'), findsOneWidget);
+
+      // Back leads to the list, not to Aktuelles.
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.text('Kommentare: Wocheneinkauf'), findsNothing);
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
       await disposeApp(tester);
     });
 

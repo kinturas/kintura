@@ -423,6 +423,7 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 		`DELETE FROM files WHERE family_id = ?1 AND uploaded_by = ?2`,
 		`DELETE FROM messages WHERE family_id = ?1 AND sender_id = ?2`,
 		`DELETE FROM event_comments WHERE user_id = ?2 AND ` + inFamily,
+		`DELETE FROM shopping_list_comments WHERE user_id = ?2 AND list_id IN (SELECT id FROM shopping_lists WHERE family_id = ?1)`,
 		`DELETE FROM event_participants WHERE user_id = ?2 AND ` + inFamily,
 		`DELETE FROM reminder_sent WHERE user_id = ?2 AND ` + inFamily,
 		`UPDATE events SET created_by = NULL WHERE family_id = ?1 AND created_by = ?2`,

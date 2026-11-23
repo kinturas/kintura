@@ -503,6 +503,34 @@ class FakeBackend {
         response = null;
       case '/api/families/f1/shopping/articles' when request.method == 'GET':
         response = shoppingArticles;
+      case final path when path.startsWith('/api/families/f1/shopping/lists/') && path.endsWith('/comments'):
+        if (request.method == 'POST') {
+          final saved = <String, Object?>{
+            'id': 'c${shoppingComments.length + 1}',
+            'body': ((body as Map)['body'] as String).trim(),
+            'created_at': DateTime.utc(2026, 11, 23, 10, shoppingComments.length).toIso8601String(),
+            'author_id': 'u1',
+            'author_name': 'Anna',
+            'can_edit': true,
+            'can_delete': true,
+          };
+          shoppingComments.add(saved);
+          response = saved;
+        } else {
+          response = shoppingComments;
+        }
+      case final path when path.startsWith('/api/families/f1/shopping/lists/') && path.contains('/comments/'):
+        writes['${request.method} $path'] = body;
+        final comment = shoppingComments.firstWhere((c) => c['id'] == path.split('/').last);
+        if (request.method == 'DELETE') {
+          comment.addAll({'body': '', 'deleted': true, 'deleted_by_name': 'Anna', 'can_edit': false, 'can_delete': false});
+        } else {
+          comment.addAll({'body': ((body as Map)['body'] as String).trim(), 'edited_at': '2026-11-23T12:00:00Z'});
+        }
+        response = comment;
+      case final path when path.startsWith('/api/families/f1/events/e1/comments/'):
+        writes['${request.method} $path'] = body;
+        response = <String, dynamic>{};
       case final path when path.startsWith('/api/families/f1/shopping/'):
         response = _shoppingWrite(request.method, path, body, request.url.queryParameters);
       case '/api/activities/unread':
@@ -543,6 +571,9 @@ class FakeBackend {
     }
     return _json(response, 200);
   });
+
+  /// The comments on every list, the oldest first.
+  final shoppingComments = <Map<String, Object?>>[];
 
   List<Map<String, Object?>> shoppingLists = [
     {
@@ -5217,6 +5248,60 @@ void calendarTests() {
         await tester.pumpAndSettle();
         expect(backend.writes['POST $_eventsPath/e1/comments'], {'body': 'Danke'});
         expect(tester.widget<TextField>(find.byKey(const Key('event-comment'))).controller!.text, isEmpty);
+        await disposeApp(tester);
+      });
+
+      testWidgets('eigene Kommentare lassen sich bearbeiten und löschen, gelöschte bleiben als Hinweis', (tester) async {
+        final at = start.toUtc().toIso8601String();
+        final backend = await open(tester, {
+          'comments': [
+            {'id': 'k1', 'body': 'Bin dabei', 'author_name': 'Anna', 'created_at': at, 'can_edit': true, 'can_delete': true},
+            {'id': 'k2', 'body': 'Ich auch', 'author_name': 'Ben', 'created_at': at, 'can_edit': false, 'can_delete': false},
+            {
+              'id': 'k3', 'body': '', 'author_name': 'Carl', 'created_at': at,
+              'deleted': true, 'deleted_by_name': 'Anna', 'can_edit': false, 'can_delete': false,
+            },
+          ],
+        });
+        // Only one's own has the menu; the deleted one tells who deleted it.
+        expect(find.byKey(const ValueKey('comment-menu-k1')), findsOneWidget);
+        expect(find.byKey(const ValueKey('comment-menu-k2')), findsNothing);
+        expect(find.byKey(const ValueKey('comment-menu-k3')), findsNothing);
+        expect(find.text('Kommentar wurde von Anna gelöscht.'), findsOneWidget);
+
+        await tester.tap(find.byKey(const ValueKey('comment-menu-k1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Bearbeiten').last);
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byKey(const Key('comment-edit')), ' Bin später dabei ');
+        await tester.tap(find.byKey(const Key('comment-edit-save')));
+        await tester.pumpAndSettle();
+        expect(backend.writes['PUT $_eventsPath/e1/comments/k1'], {'body': 'Bin später dabei'});
+
+        await tester.tap(find.byKey(const ValueKey('comment-menu-k1')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Löschen').last);
+        await tester.pumpAndSettle();
+        expect(find.text('Kommentar löschen?'), findsOneWidget);
+        await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
+        await tester.pumpAndSettle();
+        expect(backend.writes.containsKey('DELETE $_eventsPath/e1/comments/k1'), isTrue);
+        await disposeApp(tester);
+      });
+
+      testWidgets('ein Admin darf fremde Kommentare löschen, aber nicht bearbeiten', (tester) async {
+        final at = start.toUtc().toIso8601String();
+        await open(tester, {
+          'comments': [
+            {'id': 'k2', 'body': 'Ich auch', 'author_name': 'Ben', 'created_at': at, 'can_edit': false, 'can_delete': true},
+          ],
+        });
+        await tester.tap(find.byKey(const ValueKey('comment-menu-k2')));
+        await tester.pumpAndSettle();
+        expect(find.text('Bearbeiten'), findsNothing);
+        expect(find.text('Löschen'), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
         await disposeApp(tester);
       });
 

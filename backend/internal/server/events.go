@@ -303,7 +303,7 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request, c reqCtx) erro
 		return err
 	}
 	event["attachments"] = attachments
-	comments, err := queryRows(ctx, s.db, eventCommentColumns+`WHERE c.event_id = ? ORDER BY c.created_at, c.seq`, c.familyID, id)
+	comments, err := eventComments.list(ctx, s.db, c, id)
 	if err != nil {
 		return err
 	}
@@ -311,10 +311,6 @@ func (s *Server) getEvent(w http.ResponseWriter, r *http.Request, c reqCtx) erro
 	writeJSON(w, http.StatusOK, event)
 	return nil
 }
-
-// eventCommentColumns takes the family id first. Whoever left it has no name any more.
-const eventCommentColumns = `SELECT c.id, c.body, c.created_at, COALESCE(m.name, '') AS author_name FROM event_comments c
-	LEFT JOIN memberships m ON m.user_id = c.user_id AND m.family_id = ? `
 
 func (s *Server) addEventComment(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, eventID := r.Context(), r.PathValue("id")
@@ -356,11 +352,11 @@ func (s *Server) addEventComment(w http.ResponseWriter, r *http.Request, c reqCt
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	rows, err := queryRows(ctx, s.db, eventCommentColumns+`WHERE c.id = ?`, c.familyID, id)
+	comment, err := eventComments.one(ctx, s.db, c, eventID, id)
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusCreated, rows[0])
+	writeJSON(w, http.StatusCreated, comment)
 	return nil
 }
 

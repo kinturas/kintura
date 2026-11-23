@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../common.dart';
 import '../session.dart';
 import 'calendar_views.dart';
+import 'comment_tile.dart';
 import 'event_edit_screen.dart';
 
 const _maxCopyDays = 10;
@@ -369,22 +370,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         for (final comment in comments)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  [
-                    if ((comment['author_name'] as String).isNotEmpty) comment['author_name'] as String,
-                    DateFormat('dd.MM.yyyy, HH:mm', 'de').format(DateTime.parse(comment['created_at'] as String).toLocal()),
-                  ].join(' · '),
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-                const SizedBox(height: 2),
-                Text(comment['body'] as String),
-              ],
-            ),
+          CommentTile(
+            comment: comment,
+            path: '$_path/comments',
+            onChanged: () async => _details.currentState?.reload(),
           ),
       ],
     );

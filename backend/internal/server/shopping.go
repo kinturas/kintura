@@ -120,6 +120,7 @@ func (s *Server) listShoppingLists(w http.ResponseWriter, r *http.Request, c req
 		`SELECT l.id, l.name, l.color, l.created_by, l.assignees_all, l.visibility, l.due_date,
 			COALESCE(l.category_id, '') AS category_id, COALESCE(k.name, '') AS category_name, COALESCE(k.color, '') AS category_color,
 			(SELECT COUNT(*) FROM shopping_items i WHERE i.list_id = l.id AND i.done = 0) AS open_items,
+			(SELECT COUNT(*) FROM shopping_list_comments m WHERE m.list_id = l.id AND m.deleted_at IS NULL) AS comment_count,
 			EXISTS (SELECT 1 FROM shopping_lists w WHERE w.id = l.id`+strings.ReplaceAll(shoppingListWriter, "l.", "w.")+`) AS concerns_me
 		 FROM shopping_lists l LEFT JOIN categories k ON k.id = l.category_id
 		 WHERE l.family_id = ?`+shoppingListVisible+`ORDER BY l.name, l.id`,
@@ -935,4 +936,93 @@ func shoppingListEntryNote(list map[string]any) string {
 		note += " · " + category
 	}
 	return note
+}
+
+// --- Comments ---
+
+// listShoppingComments returns the comments on a list, the oldest first. Whoever may
+// see the list may read them.
+func (s *Server) listShoppingComments(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	ctx, listID := r.Context(), r.PathValue("id")
+	if err := s.shoppingListAccess(ctx, c, listID); err != nil {
+		return err
+	}
+	rows, err := shoppingComments.list(ctx, s.db, c, listID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, rows)
+	return nil
+}
+
+// addShoppingComment comments on a list, as one may on an event: whoever sees it may,
+// also with a list only to look at. Aktuelles tells those it concerns.
+func (s *Server) addShoppingComment(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	ctx, listID := r.Context(), r.PathValue("id")
+	if err := s.shoppingListAccess(ctx, c, listID); err != nil {
+		return err
+	}
+	var in struct {
+		Body string `json:"body"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		return err
+	}
+	body, err := required(in.Body, "Kommentar", 2000)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Before this one: who commented already hears of it.
+	people, err := shoppingCommentPeople(ctx, tx, c.familyID, listID)
+	if err != nil {
+		return err
+	}
+	id := newID()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO shopping_list_comments (id, list_id, user_id, body, created_at, seq)
+		 VALUES (?1, ?2, ?3, ?4, ?5, (SELECT COALESCE(MAX(seq), 0) + 1 FROM shopping_list_comments WHERE list_id = ?2))`,
+		id, listID, c.userID, body, now()); err != nil {
+		return err
+	}
+	var name string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM shopping_lists WHERE id = ?`, listID).Scan(&name); err != nil {
+		return err
+	}
+	if err := addActivityWith(ctx, tx, c.familyID, c.userID, activityListComment, listID, name, commentSnippet(body), people); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	comment, err := shoppingComments.one(ctx, s.db, c, listID, id)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusCreated, comment)
+	return nil
+}
+
+// shoppingCommentPeople are those Aktuelles tells of a comment on a list: whom the
+// list concerns and who commented on it, as far as they are still in the family.
+func shoppingCommentPeople(ctx context.Context, q dbtx, familyID, listID string) ([]string, error) {
+	people, err := shoppingListPeople(ctx, q, familyID, listID)
+	if err != nil {
+		return nil, err
+	}
+	commenters, err := queryRows(ctx, q, `SELECT DISTINCT user_id FROM shopping_list_comments WHERE list_id = ? AND user_id IS NOT NULL`, listID)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range commenters {
+		people = append(people, row["user_id"].(string))
+	}
+	members, err := familyMemberIDs(ctx, q, familyID)
+	if err != nil {
+		return nil, err
+	}
+	return both(people, members), nil
 }

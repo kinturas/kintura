@@ -507,3 +507,68 @@ func TestActivitiesOfComments(t *testing.T) {
 		t.Fatalf("legacy unread: %v", n)
 	}
 }
+
+func TestShoppingListComments(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "Anna", "F")
+	fid := e.firstFamily(owner)
+	ben, benID := e.addMember(fid, owner, "b@example.de")
+	carl, carlID := e.addMember(fid, owner, "c@example.de")
+	stranger := e.register("x@example.de", "X", "Fremde")
+	base := "/api/families/" + fid + "/shopping/lists"
+	all := func(token string) []obj {
+		t.Helper()
+		var out struct {
+			Items []obj `json:"items"`
+		}
+		if err := e.getJSON("/api/activities", token, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Items
+	}
+	comments := func(token, list string) []obj {
+		t.Helper()
+		var out []obj
+		if err := e.getJSON(base+"/"+list+"/comments", token, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// For Ben, visible to everyone: Carl may only look, and comment.
+	list := e.expect(201, "POST", base, owner, obj{"name": "Grillfest", "assignees_all": false, "assignee_ids": []string{benID}, "visibility": "all"})["id"].(string)
+	if got := comments(ben, list); len(got) != 0 {
+		t.Fatalf("empty: %v", got)
+	}
+	e.expect(400, "POST", base+"/"+list+"/comments", carl, obj{"body": "  "})
+	got := e.expect(201, "POST", base+"/"+list+"/comments", carl, obj{"body": " Bringe Salat mit "})
+	if got["body"] != "Bringe Salat mit" || got["author_id"] != carlID {
+		t.Fatalf("comment: %v", got)
+	}
+	e.expect(201, "POST", base+"/"+list+"/comments", ben, obj{"body": "Super"})
+	if got := comments(owner, list); len(got) != 2 || got[0]["body"] != "Bringe Salat mit" || got[1]["body"] != "Super" {
+		t.Fatalf("in order: %v", got)
+	}
+
+	// Anna made it, Ben is on it; Carl hears of Ben's answer, having commented.
+	if got := all(owner)[0]; got["kind"] != "list_comment" || got["ref_id"] != list || got["title"] != "Grillfest" ||
+		strings.Join(toStrings(got["names"]), "") != "Super" {
+		t.Fatalf("anna: %v", got)
+	}
+	if got := all(carl)[0]; got["kind"] != "list_comment" || got["own"] != false || got["actor_id"] != benID {
+		t.Fatalf("carl: %v", got)
+	}
+	if got := all(ben)[0]; got["kind"] != "list_comment" || got["own"] != true {
+		t.Fatalf("ben's own: %v", got)
+	}
+	// Counted on the overview, hidden from older apps, closed to others.
+	var lists []obj
+	if err := e.getJSON("/api/families/"+fid+"/shopping/lists", ben, &lists); err != nil || len(lists) != 1 || lists[0]["comment_count"] != float64(2) {
+		t.Fatalf("overview: %v %v", lists, err)
+	}
+	if legacy, _ := e.activities(owner, fid, ""); slices.ContainsFunc(legacy, func(a obj) bool { return a["kind"] == "list_comment" }) {
+		t.Fatalf("legacy: %v", legacy)
+	}
+	e.expect(404, "GET", base+"/"+list+"/comments", stranger, nil)
+	e.expect(404, "POST", base+"/"+list+"/comments", stranger, obj{"body": "Hallo"})
+}

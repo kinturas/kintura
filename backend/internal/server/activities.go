@@ -15,29 +15,34 @@ import (
 // and what is coming up for them. The app turns kind, actor, title and detail into a
 // sentence, so the wording can change without touching what is stored.
 const (
-	activityEventAdded   = "event_added"   // you were added to an event
-	activityEventAll     = "event_all"     // a new event for everyone
-	activityEventChanged = "event_changed" // an event of yours was changed
-	activityEventRemoved = "event_removed" // you were taken off an event
-	activityEventDeleted = "event_deleted" // an event of yours was deleted
-	activityListAdded    = "list_added"    // you were added to a shopping list
-	activityListAll      = "list_all"      // a new shopping list for everyone
-	activityListDeleted  = "list_deleted"  // a shopping list of yours was deleted
-	activityListReadable = "list_readable" // a shopping list was made visible to you, read-only
-	activityItemsAdded   = "items_added"   // articles were put on a shopping list of yours
-	activityItemsDone    = "items_done"    // articles were checked off a shopping list of yours
-	activityEventComment = "event_comment" // an event of yours was commented on; detail is the start of it
-	maxCommentInActivity = 120             // characters of a comment that Aktuelles shows
-	activityPageSize     = 20
-	maxActivityPageSize  = 100
-	activityKeepDays     = 90
-	activityGatherWindow = 2 * time.Hour // articles of one person on one list become one entry
-	maxGatheredItemNames = 30
-	upcomingDays         = 7
-	maxUpcoming          = 10
-	upcomingPageSize     = 5
-	upcomingAllDays      = 366
-	maxUpcomingAll       = 200
+	activityEventAdded          = "event_added"           // you were added to an event
+	activityEventAll            = "event_all"             // a new event for everyone
+	activityEventChanged        = "event_changed"         // an event of yours was changed
+	activityEventRemoved        = "event_removed"         // you were taken off an event
+	activityEventDeleted        = "event_deleted"         // an event of yours was deleted
+	activityListAdded           = "list_added"            // you were added to a shopping list
+	activityListAll             = "list_all"              // a new shopping list for everyone
+	activityListDeleted         = "list_deleted"          // a shopping list of yours was deleted
+	activityListReadable        = "list_readable"         // a shopping list was made visible to you, read-only
+	activityItemsAdded          = "items_added"           // articles were put on a shopping list of yours
+	activityItemsDone           = "items_done"            // articles were checked off a shopping list of yours
+	activityEventComment        = "event_comment"         // an event of yours was commented on; detail is the start of it
+	activityListComment         = "list_comment"          // a shopping list of yours was commented on; detail is the start of it
+	activityEventCommentEdited  = "event_comment_edited"  // a comment on an event of yours was changed; detail is the start of it
+	activityEventCommentDeleted = "event_comment_deleted" // a comment on an event of yours was deleted; detail names its author, if not the actor
+	activityListCommentEdited   = "list_comment_edited"   // the same for a shopping list
+	activityListCommentDeleted  = "list_comment_deleted"  // the same for a shopping list
+	maxCommentInActivity        = 120                     // characters of a comment that Aktuelles shows
+	activityPageSize            = 20
+	maxActivityPageSize         = 100
+	activityKeepDays            = 90
+	activityGatherWindow        = 2 * time.Hour // articles of one person on one list become one entry
+	maxGatheredItemNames        = 30
+	upcomingDays                = 7
+	maxUpcoming                 = 10
+	upcomingPageSize            = 5
+	upcomingAllDays             = 366
+	maxUpcomingAll              = 200
 )
 
 // familyMemberIDs returns the members of the family.
@@ -598,7 +603,8 @@ func shoppingListReaders(ctx context.Context, q dbtx, familyID, listID string, p
 
 // legacyKinds leaves out the kinds that came after the apps that still ask a family's
 // own endpoints: they would word them as "hat etwas geändert".
-const legacyKinds = ` AND a.kind NOT IN ('` + activityItemsDone + `', '` + activityEventComment + `')`
+const legacyKinds = ` AND a.kind NOT IN ('` + activityItemsDone + `', '` + activityEventComment + `', '` + activityListComment + `', '` +
+	activityEventCommentEdited + `', '` + activityEventCommentDeleted + `', '` + activityListCommentEdited + `', '` + activityListCommentDeleted + `')`
 
 // commentPeople is whom a comment concerns: those who take part in the event, its
 // creator and whoever commented on it before.
@@ -616,7 +622,7 @@ func commentPeople(ctx context.Context, q dbtx, familyID, eventID string) ([]str
 	if creator.Valid {
 		people = append(people, creator.String)
 	}
-	rows, err := queryRows(ctx, q, `SELECT DISTINCT user_id FROM event_comments WHERE event_id = ?`, eventID)
+	rows, err := queryRows(ctx, q, `SELECT DISTINCT user_id FROM event_comments WHERE event_id = ? AND user_id IS NOT NULL`, eventID)
 	if err != nil {
 		return nil, err
 	}

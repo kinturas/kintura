@@ -72,9 +72,14 @@ String activityText(Map<String, dynamic> activity) {
       'event_removed' => 'Du hast $people aus dem Termin $title herausgenommen.',
       'event_deleted' => 'Du hast den Termin $title gelöscht.',
       'event_comment' => 'Du hast den Termin $title kommentiert${_quote(names)}.',
+      'event_comment_edited' => 'Du hast deinen Kommentar zum Termin $title bearbeitet${_quote(names)}.',
+      'event_comment_deleted' => 'Du hast ${_whose(names, own: true)} zum Termin $title gelöscht.',
       'list_added' => 'Du hast $people zur Einkaufsliste $title hinzugefügt.',
       'list_all' => 'Du hast die Einkaufsliste $title für alle angelegt.',
       'list_deleted' => 'Du hast die Einkaufsliste $title gelöscht.',
+      'list_comment' => 'Du hast die Einkaufsliste $title kommentiert${_quote(names)}.',
+      'list_comment_edited' => 'Du hast deinen Kommentar zur Einkaufsliste $title bearbeitet${_quote(names)}.',
+      'list_comment_deleted' => 'Du hast ${_whose(names, own: true)} zur Einkaufsliste $title gelöscht.',
       'list_readable' => 'Du hast $people die Einkaufsliste $title zum Ansehen freigegeben.',
       'items_added' when count <= 1 && names.isNotEmpty => 'Du hast ${names.first} auf $title gesetzt.',
       'items_added' => 'Du hast $count Artikel auf $title gesetzt: ${_shortList(names, count)}.',
@@ -92,9 +97,14 @@ String activityText(Map<String, dynamic> activity) {
     'event_removed' => '$who hat dich aus dem Termin $title herausgenommen.',
     'event_deleted' => '$who hat den Termin $title gelöscht.',
     'event_comment' => '$who hat den Termin $title kommentiert${_quote(names)}.',
+    'event_comment_edited' => '$who hat einen Kommentar zum Termin $title bearbeitet${_quote(names)}.',
+    'event_comment_deleted' => '$who hat ${_whose(names)} zum Termin $title gelöscht.',
     'list_added' => '$who hat dich zur Einkaufsliste $title hinzugefügt.',
     'list_all' => '$who hat die Einkaufsliste $title für alle angelegt.',
     'list_deleted' => '$who hat die Einkaufsliste $title gelöscht.',
+    'list_comment' => '$who hat die Einkaufsliste $title kommentiert${_quote(names)}.',
+    'list_comment_edited' => '$who hat einen Kommentar zur Einkaufsliste $title bearbeitet${_quote(names)}.',
+    'list_comment_deleted' => '$who hat ${_whose(names)} zur Einkaufsliste $title gelöscht.',
     'list_readable' => '$who hat dir die Einkaufsliste $title zum Ansehen freigegeben (lesend).',
     'items_added' when count <= 1 && names.isNotEmpty => '$who hat ${names.first} auf $title gesetzt.',
     'items_added' => '$who hat $count Artikel auf $title gesetzt: ${_shortList(names, count)}.',
@@ -106,6 +116,11 @@ String activityText(Map<String, dynamic> activity) {
 
 /// What a comment says, after a colon; nothing if the server sent none.
 String _quote(List<String> names) => names.isEmpty || names.first.isEmpty ? '' : ': „${names.first}“';
+
+/// Which comment was deleted: someone else's by its author, or one's own.
+String _whose(List<String> names, {bool own = false}) => names.isEmpty || names.first.isEmpty
+    ? (own ? 'deinen Kommentar' : 'einen Kommentar')
+    : 'den Kommentar von ${names.first}';
 
 String _shortList(List<String> names, int count) {
   const shown = 4;
@@ -159,14 +174,16 @@ IconData _iconOf(String kind) => switch (kind) {
   'list_readable' => Icons.visibility_outlined,
   'list_added' || 'list_all' || 'list_deleted' => Icons.shopping_cart_outlined,
   'event_deleted' || 'event_removed' => Icons.event_busy,
-  'event_comment' => Icons.chat_bubble_outline,
+  'event_comment' || 'list_comment' => Icons.chat_bubble_outline,
+  'event_comment_edited' || 'list_comment_edited' => Icons.edit_note,
+  'event_comment_deleted' || 'list_comment_deleted' => Icons.speaker_notes_off_outlined,
   _ => Icons.event,
 };
 
-bool _opensList(String kind) => const {'items_added', 'items_done', 'list_added', 'list_all', 'list_readable'}.contains(kind);
+bool _opensList(String kind) => const {'items_added', 'items_done', 'list_added', 'list_all', 'list_readable', 'list_comment', 'list_comment_edited', 'list_comment_deleted'}.contains(kind);
 
 /// Kinds about an event that is still there to open.
-bool _opensEvent(String kind) => const {'event_added', 'event_all', 'event_changed', 'event_removed', 'event_comment'}.contains(kind);
+bool _opensEvent(String kind) => const {'event_added', 'event_all', 'event_changed', 'event_removed', 'event_comment', 'event_comment_edited', 'event_comment_deleted'}.contains(kind);
 
 /// Whether entries carry the circle they belong to: only if more than one is in view.
 bool _showsCircles(AppSession session) => activitiesOfAllCircles.value && session.families.length > 1;
@@ -308,7 +325,13 @@ mixin _ActivityEntries<T extends StatefulWidget> on State<T> {
       messenger.showSnackBar(const SnackBar(content: Text('Diese Einkaufsliste gibt es nicht mehr.')));
       return;
     }
-    await navigator.push(MaterialPageRoute(builder: (_) => ShoppingScreen(listId: list['id'] as String)));
+    // A comment opens with the others, over the list: back leads to the list.
+    await navigator.push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ShoppingScreen(listId: list['id'] as String, showComments: (activity['kind'] as String).startsWith('list_comment')),
+      ),
+    );
     if (mounted) await _load();
   }
 

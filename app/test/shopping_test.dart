@@ -442,6 +442,60 @@ void main() {
       await disposeApp(tester);
     });
 
+    testWidgets('Kommentare zur Liste: links neben Bearbeiten, eigene Seite, schreiben', (tester) async {
+      final backend = FakeBackend()
+        ..shoppingLast = 's1'
+        ..shoppingComments.add({
+          'id': 'c0', 'body': 'Bitte den guten Käse', 'created_at': '2026-11-22T09:00:00Z', 'author_id': 'u2', 'author_name': 'Ben',
+        });
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await tester.tap(find.text('Einkaufen'));
+      await tester.pumpAndSettle();
+      final comments = find.byKey(const Key('shopping-comments'));
+      expect(tester.getCenter(comments).dx, lessThan(tester.getCenter(find.byKey(const Key('shopping-edit-list'))).dx));
+
+      await tester.tap(comments);
+      await tester.pumpAndSettle();
+      expect(find.text('Kommentare: Wocheneinkauf'), findsOneWidget);
+      expect(find.text('Bitte den guten Käse'), findsOneWidget);
+      expect(find.textContaining('Ben · '), findsOneWidget);
+
+      await tester.enterText(find.byKey(const Key('shopping-comment')), '  Mache ich  ');
+      await tester.tap(find.byKey(const Key('shopping-comment-send')));
+      await tester.pumpAndSettle();
+      expect(backend.shoppingComments.last['body'], 'Mache ich');
+      expect(find.text('Mache ich'), findsOneWidget);
+      expect(find.textContaining('Anna · '), findsOneWidget);
+
+      // Ben's has no menu here; one's own can be changed and deleted.
+      expect(find.byKey(const ValueKey('comment-menu-c0')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('comment-menu-c2')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Bearbeiten').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('comment-edit')), 'Mache ich morgen');
+      await tester.tap(find.byKey(const Key('comment-edit-save')));
+      await tester.pumpAndSettle();
+      expect(find.text('Mache ich morgen'), findsOneWidget);
+      expect(find.textContaining('· bearbeitet'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('comment-menu-c2')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Löschen').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
+      await tester.pumpAndSettle();
+      expect(find.text('Mache ich morgen'), findsNothing);
+      expect(find.text('Kommentar wurde von Anna gelöscht.'), findsOneWidget);
+      expect(find.byKey(const ValueKey('comment-menu-c2')), findsNothing);
+
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('shopping-search')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await disposeApp(tester);
+    });
+
     testWidgets('mit Verbindung kein Hinweis zwischendurch, die Suche steht unten', (tester) async {
       final backend = FakeBackend()..shoppingLast = 's1';
       await pumpApp(tester, backend, MemoryTokens()..token = 't1');
