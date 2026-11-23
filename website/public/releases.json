@@ -1,5 +1,10 @@
 [
   {
+    "tag": "android-v0.0.16-2",
+    "published": "2026-11-23T16:03:51Z",
+    "asset": "kintura-0.0.16-2.apk"
+  },
+  {
     "tag": "windows-v0.0.14-1",
     "published": "2026-11-19T14:17:20Z",
     "asset": "kintura-0.0.14-1-windows-setup.exe"
