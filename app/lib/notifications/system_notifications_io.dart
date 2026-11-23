@@ -49,6 +49,12 @@ class _PluginNotifications implements SystemNotifications {
         onDidReceiveNotificationResponse: (response) => onTap(response.payload ?? ''),
       );
       _ready = true;
+      // Before the first one, as push messages of the server name it.
+      await _plugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(
+            AndroidNotificationChannel(_channel.channelId, _channel.channelName, description: _channel.channelDescription),
+          );
     } catch (_) {
       // Without them the app works as before.
     }

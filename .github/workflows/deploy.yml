@@ -82,6 +82,17 @@ jobs:
           fi
           printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
           printf '%s\n' "$PROPERTIES" > "$RUNNER_TEMP/key.properties"
+      - name: Firebase-Einstellungen bereitstellen
+        env:
+          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          # Ohne das Secret baut die App ohne Push-Nachrichten.
+          if [ -z "$GOOGLE_SERVICES" ]; then
+            echo "::warning::Das Secret GOOGLE_SERVICES_JSON fehlt: die App kommt ohne Push-Nachrichten, siehe README."
+            exit 0
+          fi
+          printf '%s\n' "$GOOGLE_SERVICES" > "$RUNNER_TEMP/google-services.json"
+          echo "GOOGLE_SERVICES_SECRET=google_services=$RUNNER_TEMP/google-services.json" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
@@ -90,6 +101,7 @@ jobs:
           secret-files: |
             android_keystore=${{ runner.temp }}/release.keystore
             android_key_properties=${{ runner.temp }}/key.properties
+            ${{ env.GOOGLE_SERVICES_SECRET }}
           outputs: type=local,dest=${{ runner.temp }}/apk
           build-args: |
             VERSION=${{ env.VERSION }}

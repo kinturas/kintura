@@ -14,6 +14,7 @@ import 'session_sync.dart';
 import 'shopping/shopping_outbox.dart';
 import 'live_updates.dart';
 import 'notifications/activity_notifier.dart';
+import 'notifications/push.dart';
 import 'screens/activity_screen.dart';
 import 'update_check.dart';
 
@@ -42,7 +43,7 @@ Future<void> main() async {
   session.start();
   SessionSync(session: session).start();
   LiveConnection(session: session).start();
-  activityNotifier = ActivityNotifier(session: session, onOpen: _openActivities);
+  activityNotifier = ActivityNotifier(session: session, push: PushMessaging(), onOpen: _openActivities);
   unawaited(activityNotifier!.start());
   final updates = UpdateCheck(api: api, version: version)..start();
   runApp(KinturaApp(session: session, updates: updates));

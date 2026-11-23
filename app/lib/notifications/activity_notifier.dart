@@ -7,21 +7,39 @@ import '../api.dart';
 import '../live_updates.dart';
 import '../screens/activity_screen.dart';
 import '../session.dart';
+import 'push.dart';
 import 'system_notifications.dart';
+
+/// The one of the running app; none in tests.
+ActivityNotifier? activityNotifier;
 
 /// Tells of what is new in Aktuelles, from all circles, with a notification of the
 /// system, while the app runs but is not in front. It hears of changes through the
 /// live connection, asks the server what came, and shows what others did since it
 /// last looked. Turned on and off for each device, see [setEnabled].
-/// The one of the running app; none in tests.
-ActivityNotifier? activityNotifier;
-
+///
+/// On Android with Firebase, and a server that sends, the server sends push messages
+/// instead, which also come while the app is closed; then this shows none itself.
 class ActivityNotifier {
-  ActivityNotifier({required this.session, SystemNotifications? notifications, this.onOpen})
+  ActivityNotifier({required this.session, SystemNotifications? notifications, this.push, this.onOpen})
     : notifications = notifications ?? SystemNotifications();
 
   final AppSession session;
   final SystemNotifications notifications;
+
+  /// Push messages, where there are; see [PushMessaging].
+  final PushMessaging? push;
+
+  /// Whether this device can get push messages, also while the app is closed.
+  bool get canPush => _canPush;
+  bool _canPush = false;
+
+  /// Whether the server sends push messages to this device now.
+  bool get pushing => _pushing;
+  bool _pushing = false;
+
+  /// A tapped push message opened the app before anyone was signed in.
+  bool _openWhenSignedIn = false;
 
   /// Opens Aktuelles, when a notification is tapped.
   final VoidCallback? onOpen;
@@ -45,6 +63,12 @@ class ActivityNotifier {
 
   Future<void> start() async {
     await notifications.init((_) => onOpen?.call());
+    final push = this.push;
+    if (push != null && await push.available()) {
+      _canPush = true;
+      push.onOpened = () => onOpen?.call();
+      _openWhenSignedIn = await push.openedFrom();
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       enabled.value = (prefs.getBool(_key) ?? false) && await notifications.allowed();
@@ -78,6 +102,7 @@ class ActivityNotifier {
     } catch (_) {
       // Holds until the app closes.
     }
+    await _syncPush();
     return on;
   }
 
@@ -87,7 +112,44 @@ class ActivityNotifier {
     // Someone else, or no one: start over, without telling what was before.
     _user = user;
     _since = null;
-    if (user.isNotEmpty) _schedule(Duration.zero);
+    // Signing out took the device off the server.
+    _pushing = false;
+    if (user.isEmpty) return;
+    _schedule(Duration.zero);
+    // At every start, since the key of the device can change.
+    unawaited(_syncPush());
+    if (_openWhenSignedIn) {
+      _openWhenSignedIn = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) => onOpen?.call());
+    }
+  }
+
+  /// Tells the server whether to send push messages to this device: when they are on.
+  Future<void> _syncPush() async {
+    final push = this.push;
+    if (push == null || !_canPush || _user.isEmpty) return;
+    if (!enabled.value) {
+      _pushing = false;
+      try {
+        await session.api.delete('/api/me/push-device');
+      } on ApiException {
+        // The key is forgotten below; what the server sends then goes nowhere.
+      }
+      await push.deleteToken();
+      return;
+    }
+    final token = await push.token();
+    if (token == null) {
+      _pushing = false;
+      return;
+    }
+    try {
+      await session.api.put('/api/me/push-device', {'token': token, 'platform': 'android'});
+      _pushing = enabled.value;
+    } on ApiException {
+      // A server without Firebase, or an older one: the app tells by itself.
+      _pushing = false;
+    }
   }
 
   void _heard(LiveEvent event) {
@@ -95,7 +157,8 @@ class ActivityNotifier {
   }
 
   void _schedule(Duration after) {
-    if (!enabled.value || _user.isEmpty) return;
+    // While the server sends, nothing to ask for here.
+    if (!enabled.value || _user.isEmpty || _pushing) return;
     _timer?.cancel();
     _timer = Timer(after, _check);
   }
@@ -138,6 +201,8 @@ class ActivityNotifier {
     _since = newest;
     // The first look only marks where to start.
     if (since == null) return;
+    // The server sends them, also while the app is closed.
+    if (_pushing) return;
     // In front, the app shows it already.
     if (_inFront) return;
     final fresh = items.where(

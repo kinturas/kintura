@@ -1,9 +1,11 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:kintura/api.dart';
 import 'package:kintura/live_updates.dart';
 import 'package:kintura/notifications/activity_notifier.dart';
+import 'package:kintura/notifications/push.dart';
 import 'package:kintura/notifications/system_notifications.dart';
 import 'package:kintura/session.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -109,6 +111,99 @@ void main() {
       backend.activities = [_entry('a4'), ...backend.activities];
       await changed(tester);
       expect(notifications.shown, hasLength(1));
+    });
+
+    group('auf Android mit Firebase', () {
+      const channel = MethodChannel('de.kintura.app/push');
+      late List<String> calls;
+      late bool opened;
+
+      setUp(() {
+        calls = [];
+        opened = false;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+          calls.add(call.method);
+          return switch (call.method) {
+            'available' => true,
+            'token' => 'tok-1',
+            'openedFrom' => opened,
+            _ => null,
+          };
+        });
+      });
+      tearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+      });
+
+      Future<void> startWithPush(WidgetTester tester, {bool server = true, bool enabledBefore = true}) async {
+        SharedPreferences.setMockInitialValues({if (enabledBefore) 'activity_notifications': true});
+        backend = FakeBackend()
+          ..activities = [_entry('a0')]
+          ..pushServer = server;
+        session = AppSession(api: ApiClient(client: backend.client, baseUrl: 'http://test'), tokens: MemoryTokens()..token = 't1');
+        await session.start();
+        notifications = _FakeNotifications();
+        notifier = ActivityNotifier(session: session, notifications: notifications, push: PushMessaging());
+        await notifier.start();
+        addTearDown(notifier.dispose);
+        await tester.pump(const Duration(seconds: 2));
+      }
+
+      final android = TargetPlatformVariant.only(TargetPlatform.android);
+
+      testWidgets('meldet das Gerät beim Server an, der dann schickt, auch bei geschlossener App', (tester) async {
+        await startWithPush(tester);
+        expect(notifier.canPush, isTrue);
+        expect(notifier.pushing, isTrue);
+        expect(backend.writes['PUT /api/me/push-device'], {'token': 'tok-1', 'platform': 'android'});
+
+        // The app shows none itself then, not twice.
+        background(tester);
+        addTearDown(() => front(tester));
+        backend.activities = [_entry('a1'), ...backend.activities];
+        await changed(tester);
+        expect(notifications.shown, isEmpty);
+
+        // Turned off: the server forgets the device, and so does Firebase.
+        await notifier.setEnabled(false);
+        expect(notifier.pushing, isFalse);
+        expect(backend.writes.containsKey('DELETE /api/me/push-device'), isTrue);
+        expect(calls, contains('deleteToken'));
+      }, variant: android);
+
+      testWidgets('ohne Firebase auf dem Server bleibt es bei den eigenen Benachrichtigungen', (tester) async {
+        await startWithPush(tester, server: false);
+        expect(notifier.pushing, isFalse);
+        background(tester);
+        addTearDown(() => front(tester));
+        backend.activities = [_entry('a1'), ...backend.activities];
+        await changed(tester);
+        expect(notifications.shown, hasLength(1));
+      }, variant: android);
+
+      testWidgets('eine angetippte Push-Nachricht öffnet Aktuelles', (tester) async {
+        opened = true;
+        var opens = 0;
+        SharedPreferences.setMockInitialValues({});
+        backend = FakeBackend();
+        session = AppSession(api: ApiClient(client: backend.client, baseUrl: 'http://test'), tokens: MemoryTokens()..token = 't1');
+        await session.start();
+        notifier = ActivityNotifier(session: session, notifications: _FakeNotifications(), push: PushMessaging(), onOpen: () => opens++);
+        await notifier.start();
+        addTearDown(notifier.dispose);
+        // The frame after signing in.
+        tester.binding.scheduleFrame();
+        await tester.pump();
+        expect(opens, 1);
+
+        // And while the app runs.
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.handlePlatformMessage(
+          channel.name,
+          channel.codec.encodeMethodCall(const MethodCall('opened')),
+          (_) {},
+        );
+        expect(opens, 2);
+      }, variant: android);
     });
 
     testWidgets('bleiben an, wie eingestellt, und aus, wenn das System sie nicht erlaubt', (tester) async {

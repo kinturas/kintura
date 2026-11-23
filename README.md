@@ -166,6 +166,8 @@ Get-Content app/android/key.properties -Raw | Set-Clipboard
 | `SMTP_FROM` | `SMTP_USER` | Absenderadresse |
 | `ADMIN_API_KEY` | | API-Token des Admin-Dashboards, mindestens 16 Zeichen |
 | `DEFAULT_TIMEZONE` | `Europe/Berlin` | Vorgabe für die Zeitzone neuer Termine (IANA-Name) |
+| `FCM_CREDENTIALS` | | Schlüssel eines Firebase-Dienstkontos für Push-Nachrichten an Android, als JSON oder Base64, siehe „Benachrichtigungen“ |
+| `FCM_CREDENTIALS_FILE` | | Derselbe Schlüssel als Datei, wenn `FCM_CREDENTIALS` leer ist |
 
 Ein Beispiel für den Betrieb mit Postgres liegt in `example/`: `.env.example` nach `.env` kopieren, anpassen und dort
 `docker compose up -d` starten.
@@ -462,6 +464,36 @@ Die erste Kachel zeigt, was ansteht und was passiert ist, mit der Zahl der ungel
   Zeitstempel in Mikrosekunden, damit die Reihenfolge auch innerhalb einer Sekunde feststeht.
 - **Gelesen:** Öffnen der Seite setzt `activity_seen`; die Kachel zählt, was danach kam. Nach 90 Tagen räumt der
   stündliche Aufräumlauf alte Einträge weg.
+
+
+## Benachrichtigungen
+
+Neues aus „Was ist passiert“ kann als Benachrichtigung kommen, aus allen Kreisen. Eingeschaltet wird das je Gerät im
+Profil („Benachrichtigungen auf diesem Gerät“); dabei fragt das System oder der Browser um Erlaubnis.
+
+- **Solange die App läuft** (Web, Windows): Die App hört über die Live-Verbindung von Änderungen, holt die neuesten
+  Einträge und zeigt, was andere getan haben, wenn sie nicht im Vordergrund ist.
+- **Android über Firebase Cloud Messaging**, auch bei geschlossener App: Der Server schickt jeden neuen Eintrag als
+  Push-Nachricht; die App zeigt dann keine eigenen. Ein Eintrag, der wächst (mehr Artikel), ersetzt die Nachricht davor.
+  Das Gerät meldet sich mit `PUT /api/me/push-device` an (je Anmeldung eines, beim Abmelden weg) und mit
+  `DELETE /api/me/push-device` ab. Geschickt wird nur, was höchstens eine Stunde alt ist.
+
+Einrichten:
+
+1. In der [Firebase-Konsole](https://console.firebase.google.com) ein Projekt anlegen und eine Android-App mit dem
+   Paketnamen `de.kintura.app` hinzufügen.
+2. Die `google-services.json` nach `app/android/app/` legen. Ohne sie baut die App wie bisher, ohne Push. Sie ist nicht
+   im Git und nicht im Docker-Kontext; `make build-android` reicht sie als Build-Secret durch, wenn sie da ist. Für
+   GitHub Actions gehört ihr Inhalt in das Repository-Secret `GOOGLE_SERVICES_JSON`
+   (`Get-Content app/android/app/google-services.json -Raw | Set-Clipboard`); fehlt es, kommt die APK ohne Push.
+3. Unter Projekteinstellungen → Dienstkonten einen privaten Schlüssel erzeugen. Er ist geheim und gehört weder ins
+   Repository noch zu GitHub: Das Docker-Image ist öffentlich, und GitHub startet den Server nicht. Er kommt dorthin,
+   wo der Server läuft, am einfachsten als eine Zeile in dessen `.env`: `FCM_CREDENTIALS=` mit der Ausgabe von
+   `base64 -w0 firebase-service-account.json` (PowerShell:
+   `[Convert]::ToBase64String([IO.File]::ReadAllBytes("firebase-service-account.json"))`). Alternativ als Datei mit
+   `FCM_CREDENTIALS_FILE`. Ohne Schlüssel antwortet der Server auf die Anmeldung eines Geräts mit 501, und die App
+   zeigt ihre Benachrichtigungen selbst. Beim Start meldet das Log „Push-Nachrichten über Firebase Cloud Messaging
+   eingerichtet“.
 
 ## Live-Aktualisierung
 

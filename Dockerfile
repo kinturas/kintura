@@ -33,9 +33,11 @@ RUN curl -fsSL -o /tmp/tools.zip https://dl.google.com/android/repository/comman
     && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
     && rm /tmp/tools.zip
 RUN yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
-# Der Release-Schlüssel kommt als Build-Secret und landet so in keiner Image-Schicht.
+# Der Release-Schlüssel kommt als Build-Secret und landet so in keiner Image-Schicht. Ebenso
+# google-services.json für Push-Nachrichten über Firebase; ohne sie baut die App ohne Push.
 RUN --mount=type=secret,id=android_keystore,target=/src/app/android/app/release.keystore \
     --mount=type=secret,id=android_key_properties,target=/src/app/android/key.properties \
+    --mount=type=secret,id=google_services,target=/src/app/android/app/google-services.json \
     test -n "$APP_URL" \
     && flutter build apk --release --build-name=$VERSION --build-number=$BUILD_NUMBER --dart-define=APP_URL=$APP_URL
 

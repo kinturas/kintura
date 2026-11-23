@@ -20,3 +20,5 @@ app/android/key.properties
 app/android/local.properties
 **/*.keystore
 **/*.jks
+app/android/app/google-services.json
+*firebase-service-account*.json

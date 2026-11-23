@@ -25,6 +25,7 @@ type Config struct {
 	AdminKey   string // of the admin dashboard, ignored if too short
 	Version    string // of this build, shown by GET /api/version
 	WebsiteURL string // where the apps are downloaded, for the apps to point to; may be empty
+	Push       Pusher // sends Aktuelles as push messages; nil without Firebase
 }
 
 // New checks the settings and makes sure the account for the token login exists.
@@ -67,6 +68,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 
 		live:          newLiveHub(),
 		liveHeartbeat: liveHeartbeat,
+		push:          cfg.Push,
 	}, nil
 }
 
@@ -85,4 +87,11 @@ func (s *Server) RunBackground(ctx context.Context) {
 			s.sendReminders(ctx, now)
 		}
 	}()
+	if s.push != nil {
+		go func() {
+			for now := range time.Tick(pushInterval) {
+				s.sendPushes(ctx, now)
+			}
+		}()
+	}
 }

@@ -23,6 +23,8 @@ BUILD_NUMBER ?= $(or $(shell git rev-list --count HEAD),0)
 DOCKER_ARGS = --build-arg VERSION=$(VERSION) --build-arg BUILD_NUMBER=$(BUILD_NUMBER)
 APK_SECRET_ARGS = --secret id=android_keystore,src=app/android/app/release.keystore --secret id=android_key_properties,src=app/android/key.properties
 APK_SECRETS = $(if $(wildcard app/android/key.properties),$(APK_SECRET_ARGS))
+# Firebase fuer Push-Nachrichten, nur wenn die Datei da ist.
+APK_SECRETS += $(if $(wildcard app/android/app/google-services.json),--secret id=google_services,src=app/android/app/google-services.json)
 # Welcher Teil der Version beim Deploy steigt: patch, minor oder major.
 BUMP ?= patch
 

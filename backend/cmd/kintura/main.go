@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -104,6 +105,7 @@ func main() {
 		AdminKey:   os.Getenv("ADMIN_API_KEY"),
 		Version:    version,
 		WebsiteURL: os.Getenv("WEBSITE_URL"),
+		Push:       openPush(),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -118,4 +120,38 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// openPush reads the key of a Firebase service account, for Aktuelles as push messages
+// on Android: from FCM_CREDENTIALS, the JSON itself or base64 of it (one line for a .env
+// file), or from the file FCM_CREDENTIALS_FILE. Without one, the apps only tell while
+// they run.
+func openPush() server.Pusher {
+	var credentials []byte
+	if value := strings.TrimSpace(os.Getenv("FCM_CREDENTIALS")); value != "" {
+		if strings.HasPrefix(value, "{") {
+			credentials = []byte(value)
+		} else {
+			decoded, err := base64.StdEncoding.DecodeString(value)
+			if err != nil {
+				log.Fatalf("FCM_CREDENTIALS: weder JSON noch Base64: %v", err)
+			}
+			credentials = decoded
+		}
+	} else if path := os.Getenv("FCM_CREDENTIALS_FILE"); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Fatalf("FCM_CREDENTIALS_FILE: %v", err)
+		}
+		credentials = data
+	} else {
+		log.Println("Hinweis: FCM_CREDENTIALS nicht gesetzt - keine Push-Nachrichten an Android")
+		return nil
+	}
+	push, err := server.NewFCM(credentials)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Push-Nachrichten über Firebase Cloud Messaging eingerichtet")
+	return push
 }

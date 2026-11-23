@@ -16,3 +16,7 @@ tmp
 impressum.example.txt
 datenschutz-website.example.txt
 datenschutz.example.txt
+
+# Schlüssel des Firebase-Dienstkontos, siehe README „Benachrichtigungen“
+*firebase-service-account*.json
+*firebase-adminsdk-fbsvc*.json

@@ -71,7 +71,11 @@ class ProfileScreen extends StatelessWidget {
             key: const Key('device-notifications'),
             secondary: const Icon(Icons.notifications_active_outlined),
             title: const Text('Benachrichtigungen auf diesem Gerät'),
-            subtitle: const Text('Neues aus Aktuelles, aus allen Kreisen, solange die App läuft'),
+            subtitle: Text(
+              notifier.canPush
+                  ? 'Neues aus Aktuelles, aus allen Kreisen'
+                  : 'Neues aus Aktuelles, aus allen Kreisen, solange die App läuft',
+            ),
             value: on,
             onChanged: (want) async {
               final messenger = ScaffoldMessenger.of(context);

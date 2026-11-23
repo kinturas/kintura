@@ -44,6 +44,8 @@ type Server struct {
 
 	live          *liveHub
 	liveHeartbeat time.Duration // shorter in tests
+
+	push Pusher // sends Aktuelles to phones; nil without Firebase
 }
 
 // apiError is an error whose message is safe to show to the client. The optional
@@ -203,6 +205,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/auth/code", s.wrap(s.authCode))
 	mux.Handle("POST /api/auth/register", s.wrap(s.authRegister))
 	mux.Handle("POST /api/auth/logout", s.authed(s.authLogout))
+	mux.Handle("PUT /api/me/push-device", s.authed(s.registerPushDevice))
+	mux.Handle("DELETE /api/me/push-device", s.authed(s.unregisterPushDevice))
 
 	mux.Handle("GET /api/me", s.authed(s.getMe))
 	mux.Handle("GET /api/live", s.authed(s.liveStream))

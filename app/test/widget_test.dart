@@ -410,6 +410,10 @@ class FakeBackend {
         if (body['code'] != '123456') return _json({'error': 'Der Code ist falsch.'}, 400);
         email = emailRequests.last;
         response = <String, dynamic>{};
+      case '/api/me/push-device':
+        writes['${request.method} ${request.url.path}'] = body;
+        if (!pushServer) return _json({'error': 'Push-Nachrichten sind auf diesem Server nicht eingerichtet.'}, 501);
+        response = null;
       case '/api/me/notifications':
         notifications = body['enabled'] as bool;
         response = <String, dynamic>{};
@@ -573,6 +577,9 @@ class FakeBackend {
     }
     return _json(response, 200);
   });
+
+  /// Whether the server sends push messages, see PUT /api/me/push-device.
+  bool pushServer = true;
 
   /// The comments on every list, the oldest first.
   final shoppingComments = <Map<String, Object?>>[];
