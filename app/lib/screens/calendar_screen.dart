@@ -38,7 +38,7 @@ class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
   bool _showAll = false;
   int _latestLoad = 0;
 
-  String get _view => _prefs?['view'] as String? ?? 'agenda';
+  String get _view => _prefs?['view'] as String? ?? 'month';
   bool get _showsWeekNumbers => _prefs?['week_numbers'] == true && _view != 'agenda';
   int get _firstWeekday => _prefs?['week_start'] == 'sunday' ? DateTime.sunday : DateTime.monday;
 
@@ -166,14 +166,23 @@ class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
     final prefs = _prefs;
     if (prefs == null) return;
     final session = SessionScope.of(context);
-    setState(() => _prefs = {...prefs, 'view': view});
+    setState(() {
+      _prefs = {...prefs, 'view': view};
+      _returnView = null;
+    });
     _load();
     await guarded(context, () => session.api.put('${session.familyPath}/calendar-prefs', _prefs));
   }
 
+  /// The view a day was opened from, as from the month: back goes there instead of
+  /// out of the calendar. Null once another view was chosen.
+  String? _returnView;
+
   void _openDay(DateTime day) {
+    final from = _view;
     _selected = day;
     _setView('day');
+    setState(() => _returnView = from);
   }
 
   Future<void> _add() async {
@@ -308,6 +317,17 @@ class _CalendarScreenState extends State<CalendarScreen> with LiveReload {
 
   @override
   Widget build(BuildContext context) {
+    return PopScope(
+      canPop: _returnView == null,
+      onPopInvokedWithResult: (didPop, _) {
+        final back = _returnView;
+        if (!didPop && back != null) _setView(back);
+      },
+      child: _scaffold(context),
+    );
+  }
+
+  Widget _scaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Tooltip(

@@ -99,8 +99,10 @@ type calendarPrefs struct {
 	View             string   `json:"view"`
 }
 
+// calendarPrefs are the settings of the user's calendar in the family; until they chose a
+// view of their own it shows the month.
 func (s *Server) calendarPrefs(ctx context.Context, c reqCtx) (calendarPrefs, error) {
-	prefs := calendarPrefs{WeekStart: "monday", HolidayCountries: slices.Clone(defaultHolidayCountries), View: "agenda"}
+	prefs := calendarPrefs{WeekStart: "monday", HolidayCountries: slices.Clone(defaultHolidayCountries), View: "month"}
 	var countries string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT week_numbers, week_start, default_reminder, holiday_countries, view FROM calendar_prefs WHERE user_id = ? AND family_id = ?`,

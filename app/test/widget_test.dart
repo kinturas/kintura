@@ -505,25 +505,34 @@ class FakeBackend {
         response = shoppingArticles;
       case final path when path.startsWith('/api/families/f1/shopping/'):
         response = _shoppingWrite(request.method, path, body, request.url.queryParameters);
-      case '/api/families/f1/activities/unread':
+      case '/api/activities/unread':
+        activityQueries.add(request.url.query);
         response = {'count': activitiesUnread};
-      case '/api/families/f1/activities/upcoming':
-        response = upcoming;
-      case '/api/families/f1/activities/seen':
+      case '/api/activities/upcoming':
+        activityQueries.add(request.url.query);
+        final family = request.url.queryParameters['family'];
+        final limit = int.parse(request.url.queryParameters['limit'] ?? '5');
+        final shown = upcoming.where((e) => family == null || (e['family_id'] ?? 'f1') == family).toList();
+        response = {'items': shown.take(limit).toList(), 'more': shown.length > limit};
+      case '/api/activities/seen':
+        activityQueries.add(request.url.query);
         activitiesUnread = 0;
         for (final a in activities) {
           a['new'] = false;
         }
         response = null;
-      case '/api/families/f1/activities':
-        // Pages of two, whatever is asked for, to see the paging with few entries.
+      case '/api/activities':
+        activityQueries.add(request.url.query);
+        // As many as asked for, twenty if not.
+        final family = request.url.queryParameters['family'];
+        final shown = activities.where((a) => family == null || (a['family_id'] ?? 'f1') == family).toList();
         final before = request.url.queryParameters['before'];
-        final start = before == null ? 0 : activities.indexWhere((a) => a['id'] == before) + 1;
-        const limit = 2;
-        final page = activities.skip(start).take(limit).toList();
+        final start = before == null ? 0 : shown.indexWhere((a) => a['id'] == before) + 1;
+        final limit = int.parse(request.url.queryParameters['limit'] ?? '20');
+        final page = shown.skip(start).take(limit).toList();
         response = {
           'items': page,
-          'next': start + limit < activities.length ? page.last['id'] : null,
+          'next': start + limit < shown.length ? page.last['id'] : null,
         };
       default:
         return _json({'error': 'unerwartet: ${request.url.path}'}, 500);
@@ -557,6 +566,9 @@ class FakeBackend {
   int activitiesUnread = 0;
   List<Map<String, Object?>> upcoming = [];
   List<Map<String, Object?>> activities = [];
+
+  /// The query of each request to Aktuelles, in order.
+  final activityQueries = <String>[];
 
   /// Keeps what the shopping routes change, as the server would, and records the write.
   Object? _shoppingWrite(String method, String path, Object? body, Map<String, String> query) {
@@ -4169,6 +4181,30 @@ void calendarTests() {
       await tester.tap(find.byKey(ValueKey(DateTime(now.year, now.month, now.day))));
       await tester.pumpAndSettle();
       expect(find.byType(TimeGridView), findsOneWidget);
+
+      // Back goes to the month again, and only then out of the calendar.
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byType(MonthView), findsOneWidget);
+      expect((backend.writes['PUT /api/families/f1/calendar-prefs'] as Map)['view'], 'month');
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byType(MonthView), findsNothing);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Tag aus dem Monat, dann eine andere Ansicht gewählt: zurück verlässt den Kalender', (tester) async {
+      final backend = FakeBackend();
+      final now = DateTime.now();
+      await _openCalendar(tester, backend);
+      await _pickView(tester, 'Monat');
+      await tester.tap(find.byKey(ValueKey(DateTime(now.year, now.month, now.day))));
+      await tester.pumpAndSettle();
+      await _pickView(tester, 'Woche');
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byType(TimeGridView), findsNothing);
+      expect(find.byType(MonthView), findsNothing);
       await disposeApp(tester);
     });
 
@@ -6235,3 +6271,9 @@ void offlineTests() {
     });
   });
 }
+
+/// A row of the standard calendar, for tests elsewhere.
+Map<String, Object?> calendarEntryRow(String title, DateTime start) => _entry(title, start);
+
+/// An event as the form loads it, for tests elsewhere.
+Map<String, Object?> eventDetailRow([Map<String, Object?> extra = const {}]) => _detail(extra);

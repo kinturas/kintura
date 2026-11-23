@@ -199,10 +199,14 @@ mixin LiveReload<T extends StatefulWidget> on State<T> {
   Timer? _liveSoon;
 
   /// Call once the context can reach the session, as in didChangeDependencies.
-  void listenLive(Set<String> topics, VoidCallback onChange) {
+  /// [everyFamily] hears the changes of all families of the user, not only the one in view.
+  void listenLive(Set<String> topics, VoidCallback onChange, {bool everyFamily = false}) {
     final session = SessionScope.of(context);
     _liveEvents?.cancel();
-    _liveEvents = session.live.of(session.current?.id ?? '', topics).listen((_) {
+    final events = everyFamily
+        ? session.live.events.where((e) => e.isResync || topics.contains(e.topic))
+        : session.live.of(session.current?.id ?? '', topics);
+    _liveEvents = events.listen((_) {
       _liveSoon?.cancel();
       _liveSoon = Timer(const Duration(milliseconds: 300), () {
         if (mounted) onChange();

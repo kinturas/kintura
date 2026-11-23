@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -310,5 +311,139 @@ func TestActivitiesOfReadableLists(t *testing.T) {
 	e.expect(201, "POST", base, owner, obj{"name": "Baumarkt", "assignees_all": false, "assignee_ids": []string{benID}, "visibility": "all"})
 	if items, _ := e.activities(carl, fid, ""); activityKinds(items) != "list_readable,list_readable" || items[0]["title"] != "Baumarkt" {
 		t.Fatalf("new: %v", items)
+	}
+}
+
+func TestActivitiesOfAllFamilies(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "Anna", "F")
+	fid := e.firstFamily(owner)
+	ben, benID := e.addMember(fid, owner, "b@example.de")
+	e.expect(201, "POST", "/api/families", owner, obj{"name": "Zweite"})
+	second := e.firstFamily(owner)
+	if second == fid {
+		t.Fatal("no second family")
+	}
+	all := func(token, query string) ([]obj, any) {
+		t.Helper()
+		var out struct {
+			Items []obj `json:"items"`
+			Next  any   `json:"next"`
+		}
+		if err := e.getJSON("/api/activities"+query, token, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Items, out.Next
+	}
+
+	day := func(n int) string { return time.Now().AddDate(0, 0, n).Format("2006-01-02") }
+	e.expect(201, "POST", "/api/families/"+fid+"/events", owner, obj{
+		"title": "Zahnarzt", "start_local": day(2) + "T10:00", "end_local": day(2) + "T11:00",
+		"participants_all": false, "participant_ids": []string{benID},
+	})
+	list := e.expect(201, "POST", "/api/families/"+second+"/shopping/lists", owner, obj{"name": "Meins"})["id"].(string)
+	e.expect(201, "POST", "/api/families/"+second+"/shopping/lists/"+list+"/items", owner, obj{"name": "Milch"})
+
+	// What one did oneself, in every family, never new.
+	items, _ := all(owner, "")
+	if activityKinds(items) != "items_added,list_all,event_added" {
+		t.Fatalf("own: %v", items)
+	}
+	if items[0]["family_id"] != second || items[0]["own"] != true || items[0]["new"] != false || items[2]["family_id"] != fid {
+		t.Fatalf("own entries: %v", items)
+	}
+	if strings.Join(toStrings(items[2]["names"]), ",") != "B" {
+		t.Fatalf("whom it was for: %v", items[2])
+	}
+	if items, _ := all(owner, "?family="+second); activityKinds(items) != "items_added,list_all" {
+		t.Fatalf("one family: %v", items)
+	}
+	e.expect(404, "GET", "/api/activities?family=nope", owner, nil)
+	// The page of one family stays without them, for older apps.
+	if items, _ := e.activities(owner, fid, ""); len(items) != 0 {
+		t.Fatalf("legacy: %v", items)
+	}
+	if n := e.expect(200, "GET", "/api/activities/unread", owner, nil)["count"]; n != float64(0) {
+		t.Fatalf("own is never unread: %v", n)
+	}
+	if items, _ := all(ben, ""); activityKinds(items) != "event_added" || items[0]["own"] != false || items[0]["new"] != true {
+		t.Fatalf("ben: %v", items)
+	}
+	if n := e.expect(200, "GET", "/api/activities/unread", ben, nil)["count"]; n != float64(1) {
+		t.Fatalf("ben unread: %v", n)
+	}
+	e.expect(204, "POST", "/api/activities/seen", ben, nil)
+	if n := e.expect(200, "GET", "/api/families/"+fid+"/activities/unread", ben, nil)["count"]; n != float64(0) {
+		t.Fatalf("ben after seen: %v", n)
+	}
+
+	// Coming up, over all families, the earliest first.
+	e.expect(201, "POST", "/api/families/"+second+"/events", owner, obj{"title": "Sport", "start_local": day(1) + "T18:00", "end_local": day(1) + "T19:00"})
+	e.expect(201, "POST", "/api/families/"+fid+"/events", owner, obj{"title": "Grillen", "start_local": day(40) + "T18:00", "end_local": day(40) + "T22:00"})
+	var upcoming struct {
+		Items []obj `json:"items"`
+		More  bool  `json:"more"`
+	}
+	if err := e.getJSON("/api/activities/upcoming", owner, &upcoming); err != nil {
+		t.Fatal(err)
+	}
+	if len(upcoming.Items) != 2 || upcoming.More || upcoming.Items[0]["title"] != "Sport" || upcoming.Items[0]["family_id"] != second ||
+		upcoming.Items[1]["title"] != "Grillen" || upcoming.Items[1]["family_id"] != fid {
+		t.Fatalf("upcoming: %v", upcoming)
+	}
+	if err := e.getJSON("/api/activities/upcoming?limit=1", owner, &upcoming); err != nil || len(upcoming.Items) != 1 || !upcoming.More {
+		t.Fatalf("limited: %v %v", upcoming, err)
+	}
+	if err := e.getJSON("/api/activities/upcoming?family="+fid, owner, &upcoming); err != nil || len(upcoming.Items) != 1 || upcoming.Items[0]["title"] != "Grillen" {
+		t.Fatalf("one family: %v %v", upcoming, err)
+	}
+}
+
+func TestActivitiesOfCheckedOffArticles(t *testing.T) {
+	e := newEnv(t)
+	owner := e.register("a@example.de", "Anna", "F")
+	fid := e.firstFamily(owner)
+	ben, benID := e.addMember(fid, owner, "b@example.de")
+	base := "/api/families/" + fid + "/shopping"
+	all := func(token string) []obj {
+		t.Helper()
+		var out struct {
+			Items []obj `json:"items"`
+		}
+		if err := e.getJSON("/api/activities", token, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Items
+	}
+
+	list := e.expect(201, "POST", base+"/lists", owner, obj{"name": "Wocheneinkauf", "assignees_all": false, "assignee_ids": []string{benID}})["id"].(string)
+	milk := e.expect(201, "POST", base+"/lists/"+list+"/items", owner, obj{"name": "Milch"})["id"].(string)
+	brot := e.expect(201, "POST", base+"/lists/"+list+"/items", owner, obj{"name": "Brot"})["id"].(string)
+
+	// Ben checks off two, one by name and one by its id; again changes nothing.
+	e.expect(204, "POST", base+"/lists/"+list+"/items/check", ben, obj{"name": "Brot"})
+	e.expect(204, "POST", base+"/lists/"+list+"/items/check", ben, obj{"name": "Brot"})
+	e.expect(200, "PUT", base+"/items/"+milk, ben, obj{"urgency": "", "done": true})
+	items := all(owner)
+	if items[0]["kind"] != "items_done" || items[0]["actor_name"] != "B" || items[0]["count"] != float64(2) ||
+		strings.Join(toStrings(items[0]["names"]), ",") != "Milch,Brot" {
+		t.Fatalf("anna: %v", items)
+	}
+	if own := all(ben); own[0]["kind"] != "items_done" || own[0]["own"] != true {
+		t.Fatalf("ben: %v", own)
+	}
+	// Older apps do not know it.
+	if legacy, _ := e.activities(owner, fid, ""); slices.ContainsFunc(legacy, func(a obj) bool { return a["kind"] == "items_done" }) {
+		t.Fatalf("legacy: %v", legacy)
+	}
+
+	// Taken back: out of the news again, and gone with the last one.
+	e.expect(200, "PUT", base+"/items/"+milk, ben, obj{"urgency": "", "done": false})
+	if items := all(owner); items[0]["count"] != float64(1) || strings.Join(toStrings(items[0]["names"]), ",") != "Brot" {
+		t.Fatalf("taken back: %v", items[0])
+	}
+	e.expect(200, "PUT", base+"/items/"+brot, ben, obj{"urgency": "", "done": false})
+	if items := all(owner); slices.ContainsFunc(items, func(a obj) bool { return a["kind"] == "items_done" }) {
+		t.Fatalf("all taken back: %v", items)
 	}
 }

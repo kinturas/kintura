@@ -487,12 +487,45 @@ func (s *Server) checkShoppingItem(w http.ResponseWriter, r *http.Request, c req
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`UPDATE shopping_items SET done = 1, done_at = ? WHERE list_id = ? AND name = ? AND done = 0`,
-		now(), listID, name); err != nil {
+		now(), listID, name)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		if err := s.noteItemDone(ctx, tx, c, listID, name, true); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return noContent(w)
+}
+
+// noteItemDone tells the people of the list that an article was checked off, or takes
+// it out of that news again when it is taken back soon after.
+func (s *Server) noteItemDone(ctx context.Context, tx dbtx, c reqCtx, listID, name string, done bool) error {
+	if !done {
+		return ungatherActivity(ctx, tx, c.familyID, c.userID, activityItemsDone, listID, name)
+	}
+	var listName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM shopping_lists WHERE id = ?`, listID).Scan(&listName); err != nil {
+		return err
+	}
+	people, err := shoppingListPeople(ctx, tx, c.familyID, listID)
+	if err != nil {
+		return err
+	}
+	return addGatheredActivity(ctx, tx, c.familyID, c.userID, activityItemsDone, listID, listName, name, people)
 }
 
 // updateShoppingItem saves what is noted about an article, checks it off or takes it
@@ -574,6 +607,11 @@ func (s *Server) updateShoppingItem(w http.ResponseWriter, r *http.Request, c re
 		`UPDATE shopping_items SET list_id = ?, amount = ?, note = ?, urgency = ?, done = ?, done_at = ? WHERE id = ?`,
 		in.ListID, in.Amount, in.Note, in.Urgency, in.Done, doneAt, id); err != nil {
 		return err
+	}
+	if in.Done != wasDone {
+		if err := s.noteItemDone(ctx, tx, c, in.ListID, name, in.Done); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

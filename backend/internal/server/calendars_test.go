@@ -260,7 +260,7 @@ func TestCalendarPrefsNameTheColorOfTheCalendar(t *testing.T) {
 	base := "/api/families/" + e.firstFamily(token)
 
 	got := e.expect(200, "GET", base+"/calendar-prefs", token, nil)
-	if got["calendar_color"] != "#BBDEFB" || got["view"] != "agenda" {
+	if got["calendar_color"] != "#BBDEFB" || got["view"] != "month" {
 		t.Errorf("start: %v", got)
 	}
 	e.expect(204, "PUT", base+"/calendars/family", token, obj{"enabled": true, "color": "#D32F2F"})
@@ -421,7 +421,7 @@ func TestCalendarListAndDefaults(t *testing.T) {
 		t.Errorf("school: %v", school)
 	}
 	prefs := data["prefs"].(obj)
-	if prefs["week_start"] != "monday" || prefs["week_numbers"] != false || prefs["default_reminder"] != float64(0) || prefs["view"] != "agenda" {
+	if prefs["week_start"] != "monday" || prefs["week_numbers"] != false || prefs["default_reminder"] != float64(0) || prefs["view"] != "month" {
 		t.Errorf("prefs: %v", prefs)
 	}
 	if data["cleanup_months"] != float64(12) {
