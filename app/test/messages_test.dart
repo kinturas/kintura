@@ -219,6 +219,44 @@ void main() {
     await disposeApp(tester);
   });
 
+  testWidgets('eine lange Nachricht nimmt auch auf einem kleinen Bildschirm nie die ganze Breite ein', (tester) async {
+    final backend = await _openMessages(tester, [_chat('c1', 'Urlaub', last: 'lang')]);
+    // After the start, which sets a large window.
+    tester.view.physicalSize = const Size(320, 640);
+    await tester.pumpAndSettle();
+    backend.chatMessages['c1'] = [
+      _message('m1', 'Das ist eine sehr lange Nachricht, die über mehrere Zeilen geht und gern die ganze Breite hätte.'),
+      _message('m2', 'Und eine eigene, ebenso lang, damit auch die rechte Seite frei bleibt, wie es sich gehört.', own: true),
+      _message('m3', 'Ok', own: true),
+      _message('m4', 'Ja'),
+    ];
+    await tester.tap(find.text('Urlaub'));
+    await tester.pumpAndSettle();
+    final others = tester.getRect(find.byKey(const ValueKey('chat-message-m1')));
+    final own = tester.getRect(find.byKey(const ValueKey('chat-message-m2')));
+    expect(others.width, lessThanOrEqualTo(320 * 0.8));
+    expect(own.width, lessThanOrEqualTo(320 * 0.8));
+    // Each on its side, the other side stays clear.
+    expect(320 - others.right, greaterThan(40));
+    expect(own.left, greaterThan(40));
+    // Who wrote it, small at the left of the others' messages, not at one's own.
+    final avatar = tester.getRect(find.byKey(const ValueKey('chat-avatar-m1')));
+    expect(avatar.width, 24);
+    expect(avatar.right, lessThanOrEqualTo(others.left));
+    expect(avatar.bottom, lessThanOrEqualTo(others.bottom));
+    expect(find.byKey(const ValueKey('chat-avatar-m2')), findsNothing);
+    // A short one only as wide as its words, on its side.
+    final short = tester.getRect(find.byKey(const ValueKey('chat-message-m3')));
+    expect(short.width, lessThan(100));
+    expect(short.right, greaterThan(300));
+    expect(tester.getRect(find.byKey(const ValueKey('chat-message-m4'))).width, lessThan(100));
+    // In a group the name above, in bold; not above one's own.
+    expect(tester.widget<Text>(find.text('Ben').first).style?.fontWeight, FontWeight.w800);
+    expect(find.text('Anna'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await disposeApp(tester);
+  });
+
   testWidgets('wer nur mitliest, hat kein Eingabefeld', (tester) async {
     final backend = await _openMessages(tester, [_chat('c1', 'Elternrat', canWrite: false, last: 'Treffen am Montag')]);
     backend.chatMessages['c1'] = [_message('m1', 'Treffen am Montag')];

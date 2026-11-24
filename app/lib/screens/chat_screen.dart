@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -13,6 +15,10 @@ import '../session.dart';
 import 'chat_form_screen.dart';
 import 'event_edit_screen.dart' show PickedFile;
 import 'messages_screen.dart';
+
+/// The picture of who wrote a message, next to it, and the room between them.
+const _avatarSize = 24.0;
+const _avatarGap = 6.0;
 
 /// The largest file the server takes, see maxUploadSize in files.go.
 const _maxUpload = 25 << 20;
@@ -80,6 +86,9 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
   bool _emoji = false;
   bool _started = false;
 
+  /// The members of the circle by id, for the pictures next to their messages.
+  Map<String, Map<String, dynamic>> _people = {};
+
   String get _base => '/api/families/${widget.familyId}/chats/${widget.chatId}';
 
   bool get _canWrite => _chat?['can_write'] == true;
@@ -112,7 +121,33 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
   }
 
   Future<void> _reload() async {
-    await Future.wait([_loadChat(), _load()]);
+    await Future.wait([_loadChat(), _load(), _loadPeople()]);
+  }
+
+  /// Who is in the circle, with color and picture; former members show their initials.
+  Future<void> _loadPeople() async {
+    final session = SessionScope.of(context);
+    try {
+      final result = await session.api.get('/api/families/${widget.familyId}/members') as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _people = {for (final m in (result['members'] as List).cast<Map<String, dynamic>>()) m['id'] as String: m};
+      });
+    } on ApiException {
+      // Then initials in the color of the message.
+    }
+  }
+
+  Widget _avatarOf(Map<String, dynamic> message) {
+    final person = _people[message['sender_id']];
+    final name = person?['name'] as String? ?? message['sender_name'] as String? ?? '';
+    return UserAvatar(
+      name.isEmpty ? '?' : name,
+      key: ValueKey('chat-avatar-${message['id']}'),
+      color: person?['color'] as String? ?? message['sender_color'] as String? ?? '',
+      photo: person?['avatar'] as String? ?? '',
+      radius: _avatarSize / 2,
+    );
   }
 
   /// The chat as the list has it: its name, and what the user may do.
@@ -483,6 +518,7 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
           base: _base,
           onLongPress: () => _messageMenu(message),
           onOpenFile: _openFile,
+          avatar: _avatarOf(message),
         ),
       );
     }
@@ -502,7 +538,7 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
     return ListView.builder(
       key: const Key('chat-messages'),
       reverse: true,
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
       itemCount: reversed.length,
       itemBuilder: (context, index) => reversed[index],
     );
@@ -620,6 +656,7 @@ class _Bubble extends StatelessWidget {
     required this.base,
     required this.onLongPress,
     required this.onOpenFile,
+    this.avatar,
   });
 
   final Map<String, dynamic> message;
@@ -627,6 +664,9 @@ class _Bubble extends StatelessWidget {
   final String base;
   final VoidCallback onLongPress;
   final void Function(Map<String, dynamic> file) onOpenFile;
+
+  /// The picture of who wrote it, for the messages of others.
+  final Widget? avatar;
 
   @override
   Widget build(BuildContext context) {
@@ -641,16 +681,22 @@ class _Bubble extends StatelessWidget {
     final at = DateTime.tryParse(message['created_at'] as String? ?? '')?.toLocal();
     final senderColor = message['sender_color'] as String? ?? '';
     final session = SessionScope.of(context);
-    return Align(
+    final bubble = Align(
       alignment: own ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
+        // Never the whole width, also on a small screen: the side it is on stays clear.
+        constraints: BoxConstraints(
+          maxWidth: min(
+            420,
+            MediaQuery.sizeOf(context).width * 0.8 - (own || this.avatar == null ? 0 : _avatarSize + _avatarGap),
+          ),
+        ),
         child: GestureDetector(
           key: ValueKey('chat-message-${message['id']}'),
           onLongPress: onLongPress,
           onSecondaryTap: onLongPress,
           child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 2),
+            margin: const EdgeInsets.only(top: 2, bottom: 8),
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
             decoration: BoxDecoration(
               color: background,
@@ -661,104 +707,121 @@ class _Bubble extends StatelessWidget {
                 bottomRight: Radius.circular(own ? 4 : 16),
               ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (group && !own)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Text(
-                      (message['sender_name'] as String? ?? '').isEmpty
-                          ? 'Ehemaliges Mitglied'
-                          : message['sender_name'] as String,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: senderColor.isEmpty ? scheme.primary : parseHexColor(senderColor),
-                        fontWeight: FontWeight.bold,
+            // As wide as what it holds, so that a short message stays short; the time still sits on the right.
+            child: IntrinsicWidth(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (group && !own)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        (message['sender_name'] as String? ?? '').isEmpty
+                            ? 'Ehemaliges Mitglied'
+                            : message['sender_name'] as String,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: senderColor.isEmpty ? scheme.primary : parseHexColor(senderColor),
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
-                  ),
-                if (deleted)
-                  Text(
-                    'Nachricht gelöscht',
-                    style: TextStyle(color: foreground.withValues(alpha: 0.7), fontStyle: FontStyle.italic),
-                  ),
-                for (final file in files)
-                  if (file['kind'] == 'photo')
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: InkWell(
-                        key: ValueKey('chat-picture-${file['id']}'),
-                        onTap: () => onOpenFile(file),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(
-                              maxWidth: 260,
-                              maxHeight: 320,
-                              minWidth: 120,
-                              minHeight: 80,
-                            ),
-                            child: FutureBuilder<Uint8List>(
-                              future: _picture(session, '$base/attachments/${file['id']}'),
-                              builder: (context, snapshot) => snapshot.hasData
-                                  ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-                                  : Container(
-                                      width: 200,
-                                      height: 150,
-                                      color: scheme.surfaceContainerHighest,
-                                      child: snapshot.hasError ? const Icon(Icons.broken_image_outlined) : null,
-                                    ),
+                  if (deleted)
+                    Text(
+                      'Nachricht gelöscht',
+                      style: TextStyle(color: foreground.withValues(alpha: 0.7), fontStyle: FontStyle.italic),
+                    ),
+                  for (final file in files)
+                    if (file['kind'] == 'photo')
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: InkWell(
+                          key: ValueKey('chat-picture-${file['id']}'),
+                          onTap: () => onOpenFile(file),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                maxWidth: 260,
+                                maxHeight: 320,
+                                minWidth: 120,
+                                minHeight: 80,
+                              ),
+                              child: FutureBuilder<Uint8List>(
+                                future: _picture(session, '$base/attachments/${file['id']}'),
+                                builder: (context, snapshot) => snapshot.hasData
+                                    ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+                                    : Container(
+                                        width: 200,
+                                        height: 150,
+                                        color: scheme.surfaceContainerHighest,
+                                        child: snapshot.hasError ? const Icon(Icons.broken_image_outlined) : null,
+                                      ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    )
-                  else
-                    InkWell(
-                      key: ValueKey('chat-file-${file['id']}'),
-                      onTap: () => onOpenFile(file),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.description_outlined, color: foreground),
-                            const SizedBox(width: 8),
-                            Flexible(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    file['name'] as String? ?? '',
-                                    style: TextStyle(color: foreground, decoration: TextDecoration.underline),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  Text(
-                                    _fileSize((file['size'] as num?) ?? 0),
-                                    style: theme.textTheme.labelSmall?.copyWith(color: foreground),
-                                  ),
-                                ],
+                      )
+                    else
+                      InkWell(
+                        key: ValueKey('chat-file-${file['id']}'),
+                        onTap: () => onOpenFile(file),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.description_outlined, color: foreground),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      file['name'] as String? ?? '',
+                                      style: TextStyle(color: foreground, decoration: TextDecoration.underline),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      _fileSize((file['size'] as num?) ?? 0),
+                                      style: theme.textTheme.labelSmall?.copyWith(color: foreground),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
+                  if (body.isNotEmpty) Text(body, style: TextStyle(color: foreground, fontSize: 15)),
+                  Align(
+                    alignment: Alignment.bottomRight,
+                    child: Text(
+                      at == null ? '' : timeFormat.format(at),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: foreground.withValues(alpha: 0.7),
+                        fontSize: 10,
+                      ),
                     ),
-                if (body.isNotEmpty) Text(body, style: TextStyle(color: foreground, fontSize: 15)),
-                Align(
-                  alignment: Alignment.bottomRight,
-                  child: Text(
-                    at == null ? '' : timeFormat.format(at),
-                    style: theme.textTheme.labelSmall?.copyWith(color: foreground.withValues(alpha: 0.7), fontSize: 10),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
+    );
+    final avatar = this.avatar;
+    if (own || avatar == null) return bubble;
+    // Who wrote it, small at the bottom left, as the line of the message ends there.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Padding(padding: const EdgeInsets.only(bottom: 8), child: avatar),
+        const SizedBox(width: _avatarGap),
+        Expanded(child: bubble),
+      ],
     );
   }
 }
