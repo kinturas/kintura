@@ -20,6 +20,25 @@
             "toolArgs": ["--dart-define=APP_URL=http://localhost:1316"]
         },
         {
+            // Handy per USB oder WLAN-Debugging, Gerät unten rechts in der Statusleiste wählen.
+            // localhost wäre auf dem Handy das Handy selbst: die Adresse des PCs im WLAN, wie APP_URL in .env.
+            "name": "App (Android)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "toolArgs": ["--dart-define=APP_URL=http://192.168.80.130:1316"]
+        },
+        {
+            // Im Emulator ist 10.0.2.2 der PC.
+            "name": "App (Android-Emulator)",
+            "type": "dart",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/app",
+            "program": "lib/main.dart",
+            "toolArgs": ["--dart-define=APP_URL=http://10.0.2.2:1316"]
+        },
+        {
             "name": "App (macOS)",
             "type": "dart",
             "request": "launch",
@@ -56,6 +75,16 @@
         {
             "name": "Backend + App (Windows)",
             "configurations": ["Backend", "App (Windows)"],
+            "stopAll": true
+        },
+        {
+            "name": "Backend + App (Android)",
+            "configurations": ["Backend", "App (Android)"],
+            "stopAll": true
+        },
+        {
+            "name": "Backend + App (Android-Emulator)",
+            "configurations": ["Backend", "App (Android-Emulator)"],
             "stopAll": true
         },
         {
