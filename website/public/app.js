@@ -1,6 +1,8 @@
-// Fills the download cards from releases.json, which make deploy-android and deploy-windows extend.
+// Fills the download cards from releases.json, which the deploy workflow makes from the
+// GitHub releases: one release v1.2.3 holds the files of all platforms; older ones were
+// android-v1.2.3-7 and windows-v1.2.3-7, one platform each.
 
-const TAG = /^([a-z]+)-v(\d+\.\d+\.\d+)(?:-(\d+))?$/;
+const TAG = /^(?:[a-z]+-)?v(\d+\.\d+\.\d+)(?:-(\d+))?$/;
 
 // Set from REPO_URL when the image is built.
 const REPO = document.documentElement.dataset.repo;
@@ -9,16 +11,17 @@ const label = (build) => build.version + (build.number ? ` (Build ${build.number
 
 const details = (build) => new Date(build.published).toLocaleDateString("de-DE");
 
-function buildsOf(releases, platform, extension) {
+function buildsOf(releases, extension) {
   return releases.flatMap((release) => {
     const match = TAG.exec(release.tag);
-    if (!match || match[1] !== platform || !release.asset.endsWith(extension)) return [];
+    const asset = (release.assets || []).find((name) => name.endsWith(extension));
+    if (!match || !asset) return [];
     return [{
-      version: match[2],
-      number: match[3],
+      version: match[1],
+      number: match[2],
       published: release.published,
       page: `${REPO}/releases/tag/${release.tag}`,
-      file: `${REPO}/releases/download/${release.tag}/${release.asset}`,
+      file: `${REPO}/releases/download/${release.tag}/${asset}`,
     }];
   });
 }
@@ -39,7 +42,7 @@ function olderRow(build) {
 
 function fill(card, releases) {
   const status = card.querySelector("[data-status]");
-  const [latest, ...older] = buildsOf(releases, card.dataset.platform, card.dataset.extension);
+  const [latest, ...older] = buildsOf(releases, card.dataset.extension);
   if (!latest) {
     status.textContent = "Noch keine Version verfügbar.";
     return;

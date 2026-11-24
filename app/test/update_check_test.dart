@@ -24,9 +24,14 @@ class _Fake {
 
   int get githubCalls => seen.where((r) => r.url.host == 'api.github.com').length;
 
-  static String _file(String tag) {
+  /// One release v1.2.3 holds both files, the older ones per platform one.
+  static List<String> _files(String tag) {
+    if (tag.startsWith('v')) {
+      final version = tag.substring(1);
+      return ['kintura-$version.apk', 'kintura-$version-windows-setup.exe'];
+    }
     final version = tag.substring(tag.indexOf('-v') + 2);
-    return tag.startsWith('windows') ? 'kintura-$version-windows-setup.exe' : 'kintura-$version.apk';
+    return [tag.startsWith('windows') ? 'kintura-$version-windows-setup.exe' : 'kintura-$version.apk'];
   }
 
   late final client = MockClient((request) async {
@@ -42,7 +47,8 @@ class _Fake {
             'html_url': 'https://github.com/kinturas/kintura/releases/tag/$tag',
             'assets': [
               if (!withoutFile.contains(tag))
-                {'name': _file(tag), 'browser_download_url': 'https://github.com/download/$tag/${_file(tag)}'},
+                for (final file in _files(tag))
+                  {'name': file, 'browser_download_url': 'https://github.com/download/$tag/$file'},
             ],
           },
         {'tag_name': 'web-v9.9.9', 'draft': false, 'prerelease': false, 'assets': const []},
@@ -105,6 +111,22 @@ void main() {
       final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'windows', client: fake.client);
       expect(await check.check(), UpdateStatus.available);
       expect(check.latest.value?.downloadUrl, endsWith('kintura-0.0.14-9-windows-setup.exe'));
+    });
+
+    test('ein Release v1.2.3 für alle: jede Plattform nimmt ihre Datei', () async {
+      final fake = _Fake(releases: ['v0.0.17', 'android-v0.0.16-2', 'windows-v0.0.16-2', 'website-v0.0.12-5']);
+      final android = UpdateCheck(api: fake.api, version: '0.0.16+2', platform: 'android', client: fake.client);
+      expect(await android.check(), UpdateStatus.available);
+      expect(android.latest.value?.name, '0.0.17');
+      expect(android.latest.value?.downloadUrl, 'https://github.com/download/v0.0.17/kintura-0.0.17.apk');
+
+      final windows = UpdateCheck(api: fake.api, version: '0.0.16+2', platform: 'windows', client: fake.client);
+      expect(await windows.check(), UpdateStatus.available);
+      expect(windows.latest.value?.downloadUrl, endsWith('/v0.0.17/kintura-0.0.17-windows-setup.exe'));
+
+      // Built from that release: the build number is the count of commits, higher than 0.
+      final current = UpdateCheck(api: fake.api, version: '0.0.17+130', platform: 'android', client: fake.client);
+      expect(await current.check(), UpdateStatus.upToDate);
     });
 
     test('ein Release ohne Datei zählt noch nicht', () async {

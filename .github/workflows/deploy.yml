@@ -1,12 +1,16 @@
-# Gestartet von make deploy, deploy-android und deploy-windows, siehe README.
+# Gestartet von make deploy (Tag v1.2.3) und make deploy-website (Tag website-v…), siehe README.
+#
+# Ein Release v1.2.3 enthält alles: das Docker-Image mit Backend und Web-App, die APK und den
+# Windows-Installer. Es entsteht als Entwurf, die Builds laden ihre Dateien hoch, und erst
+# wenn alle fertig sind, wird es veröffentlicht. Entwürfe sieht die App nicht, so meldet sie
+# nie ein Update, dessen Datei noch fehlt. Schlägt ein Build fehl, bleibt der Entwurf liegen;
+# "Re-run failed jobs" macht dort weiter.
 name: Deploy
 
 on:
   push:
     tags:
-      - "web-v*"
-      - "android-v*"
-      - "windows-v*"
+      - "v*"
       - "website-v*"
 
 env:
@@ -14,20 +18,53 @@ env:
   APP_URL: ${{ vars.APP_URL }}
 
 jobs:
-  web:
-    if: startsWith(github.ref_name, 'web-v')
+  prepare:
+    if: startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # Eine Build-Nummer für alle Plattformen: die Zahl der Commits. Sie steigt immer, das
+      # braucht Android, das kein Update mit kleinerer Nummer annimmt.
       - name: Version bestimmen
+        id: version
         run: |
-          echo "VERSION=${GITHUB_REF_NAME##*-v}" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Repository-Variablen prüfen
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
+            exit 1
+          fi
+      - name: Release als Entwurf anlegen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Bei einem erneuten Lauf gibt es ihn schon.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then exit 0; fi
+          # Die Notizen seit dem letzten Release, vor den Tags v… war das web-v….
+          previous="$(git tag --list 'v*' 'web-v*' --sort=-creatordate | grep -vx "$GITHUB_REF_NAME" | head -1 || true)"
+          gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes \
+            ${previous:+--notes-start-tag "$previous"}
+
+  web:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -45,32 +82,17 @@ jobs:
           build-args: |
             VERSION=${{ env.VERSION }}
             BUILD_NUMBER=${{ env.BUILD_NUMBER }}
-      # Ohne Datei, die Web-App steckt im Docker-Image.
-      - name: Als GitHub-Release veröffentlichen
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" --title "Web $VERSION" --generate-notes \
-            --notes "Docker-Image: \`$IMAGE:$VERSION\` (auch \`$IMAGE:latest\`)"
 
   android:
-    if: startsWith(github.ref_name, 'android-v')
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
     steps:
       - uses: actions/checkout@v7
-      - name: Version bestimmen
-        run: |
-          build="${GITHUB_REF_NAME#*-v}"
-          echo "VERSION=${build%-*}" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=${build##*-}" >> "$GITHUB_ENV"
-      - name: APP_URL prüfen
-        run: |
-          if [ -z "$APP_URL" ]; then
-            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
-            exit 1
-          fi
       - name: Release-Schlüssel bereitstellen
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -107,33 +129,27 @@ jobs:
             VERSION=${{ env.VERSION }}
             BUILD_NUMBER=${{ env.BUILD_NUMBER }}
             APP_URL=${{ env.APP_URL }}
-      - name: APK als GitHub-Release veröffentlichen
+      # Der Name endet auf .apk, daran erkennen App und Website die Datei.
+      - name: APK zum Release hochladen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/apk/kintura-$VERSION-$BUILD_NUMBER.apk" --title "Android $VERSION" --generate-notes
+          cp "$RUNNER_TEMP/apk/kintura-$VERSION-$BUILD_NUMBER.apk" "$RUNNER_TEMP/kintura-$VERSION.apk"
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/kintura-$VERSION.apk" --clobber
 
   windows:
-    if: startsWith(github.ref_name, 'windows-v')
+    needs: prepare
     runs-on: windows-latest
     permissions:
       contents: write
     defaults:
       run:
         shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build }}
     steps:
       - uses: actions/checkout@v7
-      - name: Version bestimmen
-        run: |
-          build="${GITHUB_REF_NAME#*-v}"
-          echo "VERSION=${build%-*}" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=${build##*-}" >> "$GITHUB_ENV"
-      - name: APP_URL prüfen
-        run: |
-          if [ -z "$APP_URL" ]; then
-            echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
-            exit 1
-          fi
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.44.8
@@ -146,18 +162,32 @@ jobs:
       - name: Installer bauen
         shell: pwsh
         run: app/windows/build-installer.ps1 -Version $env:VERSION -Build $env:BUILD_NUMBER
-      - name: Als GitHub-Release veröffentlichen
+      # Der Name endet auf -windows-setup.exe, daran erkennen App und Website die Datei.
+      - name: Installer zum Release hochladen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" "builds/kintura-$VERSION-$BUILD_NUMBER-windows-setup.exe" --title "Windows $VERSION" --generate-notes
+        run: |
+          cp "builds/kintura-$VERSION-$BUILD_NUMBER-windows-setup.exe" "builds/kintura-$VERSION-windows-setup.exe"
+          gh release upload "$GITHUB_REF_NAME" "builds/kintura-$VERSION-windows-setup.exe" --clobber
 
-  # Baut website/ als nginx-Image. Läuft auch nach jedem App-Release, damit releases.json im
-  # Image und damit die Download-Links aktuell bleiben. Impressum und Datenschutz kommen erst
-  # beim Start des Containers dazu, siehe website/content-from-env.sh.
+  publish:
+    needs: [web, android, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+  # Baut website/ als nginx-Image, nach jedem Release und bei website-v… allein. releases.json
+  # für die Download-Links entsteht hier aus den veröffentlichten Releases. Impressum und
+  # Datenschutz kommen erst beim Start des Containers dazu, siehe website/content-from-env.sh.
   website:
-    needs: [android, windows]
+    needs: publish
     if: >-
-      !cancelled() && !contains(needs.*.result, 'failure') && !startsWith(github.ref_name, 'web-v')
+      !cancelled() && (needs.publish.result == 'success' || startsWith(github.ref_name, 'website-v'))
     runs-on: ubuntu-latest
     # One build at a time; a waiting one replaces an older waiting one, both push :latest.
     concurrency:
@@ -171,19 +201,22 @@ jobs:
       REPO_URL: ${{ vars.REPO_URL || format('{0}/{1}', github.server_url, github.repository) }}
     steps:
       - uses: actions/checkout@v7
-      # releases.json from main, not from this tag: a release built late, say re-run after
-      # a failure, would otherwise drop the builds tagged after it from the downloads.
-      - name: Aktuelle releases.json von main
-        run: |
-          git fetch --depth=1 origin main
-          git checkout FETCH_HEAD -- website/public/releases.json
       - name: Repository-Variablen prüfen
         run: |
           if [ -z "$APP_URL" ]; then
             echo "::error::Die Repository-Variable APP_URL fehlt (Settings, Secrets and variables, Actions, Variables)."
             exit 1
           fi
-      # Eine Versionsnummer gibt es nur bei website-v..., nach einem App-Release nur :latest.
+      - name: releases.json aus den Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -s '[.[][] | select((.draft or .prerelease) | not) | select(.assets | length > 0)
+                      | {tag: .tag_name, published: .published_at, assets: [.assets[].name]}]' \
+            > website/public/releases.json
+          cat website/public/releases.json
+      # Eine Versionsnummer gibt es nur bei website-v..., nach einem Release nur :latest.
       - name: Tags bestimmen
         run: |
           tags="$WEBSITE_IMAGE:latest"

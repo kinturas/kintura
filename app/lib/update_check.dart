@@ -57,7 +57,7 @@ Future<String> identifyApp(ApiClient api) async {
   return version;
 }
 
-/// A build for this platform on GitHub, from a tag like android-v1.2.3-7.
+/// A build for this platform on GitHub, from a tag like v1.2.3 or, older, android-v1.2.3-7.
 class AppRelease {
   const AppRelease({required this.version, required this.pageUrl, required this.downloadUrl});
 
@@ -69,8 +69,8 @@ class AppRelease {
   /// The file to install: the APK on Android, the installer on Windows.
   final String downloadUrl;
 
-  /// As the about page shows the own version: 1.2.3 (7).
-  String get name => '${version.$1}.${version.$2}.${version.$3} (${version.$4})';
+  /// 1.2.3; older releases per platform with their build: 1.2.3 (7).
+  String get name => '${version.$1}.${version.$2}.${version.$3}${version.$4 == 0 ? '' : ' (${version.$4})'}';
 }
 
 enum UpdateStatus {
@@ -216,9 +216,11 @@ class UpdateCheck {
       for (final entry in jsonDecode(utf8.decode(response.bodyBytes)) as List) {
         if (entry is! Map || entry['draft'] == true || entry['prerelease'] == true) continue;
         final tag = entry['tag_name'];
-        if (tag is! String || !tag.startsWith('$platform-v')) continue;
-        // The build number is optional: android-v1.2.3 or android-v1.2.3-7.
-        final release = parseVersion(tag.substring('$platform-v'.length).replaceFirst('-', '+'));
+        if (tag is! String) continue;
+        // One release v1.2.3 for all platforms; before, one per platform: android-v1.2.3-7.
+        final prefix = tag.startsWith('v') ? 'v' : '$platform-v';
+        if (!tag.startsWith(prefix)) continue;
+        final release = parseVersion(tag.substring(prefix.length).replaceFirst('-', '+'));
         if (release == null || (newest != null && compareVersions(release, newest.version) <= 0)) continue;
         // Without its file, say while it is still uploading, a release is no use yet.
         final assets = (entry['assets'] as List? ?? const []).whereType<Map>();

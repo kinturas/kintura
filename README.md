@@ -41,7 +41,7 @@ unverträglich), wird sie dort auf die Version des anstehenden Releases gesetzt.
 `GET /api/version` bleibt für sie erreichbar. Anfragen ohne Version, etwa von Apps vor dieser Prüfung, lässt das Backend durch.
 
 Ohne Sperre zeigen die Apps einen Hinweis „Eine neue Version von Kintura ist da“: die Web-App, sobald der Server eine
-andere Version hat, Android und Windows, sobald es auf GitHub einen neueren Release `android-v…` bzw. `windows-v…` mit
+andere Version hat, Android und Windows, sobald es auf GitHub ein neueres veröffentlichtes Release `v…` mit
 APK bzw. `…-windows-setup.exe` gibt. Sie fragen dafür die GitHub-API öffentlich und höchstens alle 10 Minuten
 (`--dart-define=RELEASES_REPO=owner/name` für einen Fork, Standard `kinturas/kintura`). Auf Android lädt „Installieren“ die APK
 in der App herunter und öffnet den Installationsdialog von Android (Berechtigung `REQUEST_INSTALL_PACKAGES`, beim ersten
@@ -68,30 +68,33 @@ Die Web-App liegt unter `/` und spricht mit demselben Server. Datenbank und Date
 ## Deploy
 
 Jeder Befehl setzt einen Tag und pusht ihn, den Rest erledigt GitHub Actions ([deploy.yml](.github/workflows/deploy.yml)).
-Es muss auf `main` alles committet sein. Nur `make deploy` erhöht die Hauptversion in `VERSION`. Android und Windows nehmen die aktuelle
-Hauptversion und zählen je eine eigene Build-Nummer hoch, die auch bei einer neuen Hauptversion weiterläuft.
+Es muss auf `main` alles committet sein.
 
 | Befehl | Tag | Ergebnis |
 | --- | --- | --- |
-| `make deploy` | `web-v1.2.3` | Image `ghcr.io/kinturas/kintura:1.2.3` und `:latest` |
-| `make deploy-android` | `android-v1.2.3-7` | APK als GitHub-Release |
-| `make deploy-windows` | `windows-v1.2.3-4` | Installer als GitHub-Release |
-| `make deploy-website` | `website-v1.2.3-5` | Image `ghcr.io/kinturas/kintura-website:1.2.3-5` und `:latest` |
-| `make deploy-all` | `web-v…`, `android-v…`, `windows-v…` | `deploy`, `deploy-android` und `deploy-windows` nacheinander mit derselben Hauptversion; die Website baut GitHub danach selbst neu |
+| `make deploy` | `v1.2.3` | Ein GitHub-Release `v1.2.3` mit APK (`kintura-1.2.3.apk`) und Windows-Installer (`kintura-1.2.3-windows-setup.exe`), dazu das Image `ghcr.io/kinturas/kintura:1.2.3` und `:latest`; danach die Website |
+| `make deploy-website` | `website-v1.2.3-5` | Nur die Website: Image `ghcr.io/kinturas/kintura-website:1.2.3-5` und `:latest` |
 
-Standardmäßig steigt die letzte Stelle der Hauptversion, sonst etwa `make deploy BUMP=minor` oder `BUMP=major`, das gilt auch für `make deploy-all`.
+`make deploy` erhöht die Version in `VERSION`, standardmäßig die letzte Stelle, sonst etwa `make deploy BUMP=minor` oder `BUMP=major`.
+Das Release entsteht als Entwurf, Web, Android und Windows bauen parallel und laden ihre Dateien hoch; erst wenn alle drei fertig sind,
+wird es veröffentlicht. Entwürfe sehen weder die Apps noch die Website. Schlägt ein Build fehl, bleibt der Entwurf liegen, „Re-run failed jobs“
+in GitHub Actions macht dort weiter.
+
+Die Build-Nummer ist auf allen Plattformen die Zahl der Commits (`git rev-list --count HEAD`), die App meldet sich also etwa als `1.2.3+130`.
+Sie steigt immer, das braucht Android, das kein Update mit kleinerer Nummer annimmt.
 Android und Windows brauchen die Adresse des Backends als Repository-Variable `APP_URL` in GitHub, im Betrieb `https://app.kintura.de`.
+Bis 0.0.16 gab es je Plattform ein eigenes Release (`web-v…`, `android-v…-7`, `windows-v…-7`); App und Website kennen beide Formen.
 
 ## Website
 
 `website/` ist eine eigenständige statische Seite, unabhängig vom Backend. Die Anmelde-Links zeigen auf die Repository-Variable
 `APP_URL`, lokal auf `APP_URL` aus der `.env`.
 
-`make deploy-website` zählt wie Android und Windows eine eigene Build-Nummer hoch, GitHub baut die Seite dann als nginx-Image
-(`website/Dockerfile`) und pusht es nach `ghcr.io/kinturas/kintura-website`. Nach jedem Android- oder Windows-Deploy wird `:latest`
-automatisch neu gebaut, damit die Download-Links stimmen; der Server muss das Image danach neu ziehen. Die Builds stehen in
-`website/public/releases.json`: `make deploy-android` und `make deploy-windows` tragen ihren Build dort ein und committen das mit,
-die Links stimmen also auch beim lokalen Bauen. Schlägt ein Build in GitHub fehl, muss sein Eintrag von Hand wieder raus.
+`make deploy-website` zählt eine eigene Build-Nummer hoch, GitHub baut die Seite dann als nginx-Image
+(`website/Dockerfile`) und pusht es nach `ghcr.io/kinturas/kintura-website`. Nach jedem `make deploy` wird `:latest`
+automatisch neu gebaut, damit die Download-Links stimmen; der Server muss das Image danach neu ziehen. Die Downloads stehen in
+`website/public/releases.json`, die der Workflow vor dem Bauen aus den veröffentlichten GitHub-Releases neu schreibt. Die Datei im
+Repository ist nur für lokale Builds und darf veralten.
 
 Impressum und Datenschutz sind nicht im Image, sie kommen beim Start des Containers dazu (siehe unten). Ohne sie zeigt die Seite die
 Beispieldaten aus dem Repository.
