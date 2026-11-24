@@ -12,6 +12,7 @@ import '../api.dart';
 import '../common.dart';
 import '../live_updates.dart';
 import '../session.dart';
+import 'activity_screen.dart' show CircleLabel;
 import 'chat_form_screen.dart';
 import 'event_edit_screen.dart' show PickedFile;
 import 'messages_screen.dart';
@@ -85,6 +86,9 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
   int _uploading = 0;
   bool _emoji = false;
   bool _started = false;
+
+  /// The message the next one answers, shown above the field until sent or dropped.
+  Map<String, dynamic>? _replyTo;
 
   /// The members of the circle by id, for the pictures next to their messages.
   Map<String, Map<String, dynamic>> _people = {};
@@ -223,9 +227,13 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
     if (body.isEmpty || _sending) return;
     final session = SessionScope.of(context);
     setState(() => _sending = true);
-    final ok = await guarded(context, () => session.api.post('$_base/messages', {'body': body}));
+    final replyTo = _replyTo?['id'] as String?;
+    final ok = await guarded(context, () => session.api.post('$_base/messages', {'body': body, 'reply_to': ?replyTo}));
     if (!mounted) return;
-    setState(() => _sending = false);
+    setState(() {
+      _sending = false;
+      if (ok) _replyTo = null;
+    });
     if (!ok) return;
     _input.clear();
     await _load();
@@ -265,49 +273,83 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
     if (mounted) await _load();
   }
 
-  Future<void> _messageMenu(Map<String, dynamic> message) async {
-    if (message['deleted'] == true) return;
+  PopupMenuItem<String> _action(String value, IconData icon, String label) => PopupMenuItem(
+    key: Key('chat-action-$value'),
+    value: value,
+    child: ListTile(leading: Icon(icon), title: Text(label), contentPadding: EdgeInsets.zero),
+  );
+
+  /// What to do with a message, where it was tapped: react, answer, copy, forward, delete.
+  Future<void> _messageMenu(Map<String, dynamic> message, Offset at) async {
+    final deleted = message['deleted'] == true;
     final body = message['body'] as String? ?? '';
-    final action = await showModalBottomSheet<String>(
+    final files = message['attachments'] as List? ?? const [];
+    final items = [
+      if (_canWrite && !deleted) _action('react', Icons.add_reaction_outlined, 'Reaktion'),
+      if (_canWrite && !deleted) _action('reply', Icons.reply, 'Antworten'),
+      // Pictures and documents cannot go into the clipboard.
+      if (!deleted && body.isNotEmpty && files.isEmpty) _action('copy', Icons.copy, 'Kopieren'),
+      if (!deleted) _action('forward', Icons.shortcut, 'Weiterleiten'),
+      if (message['can_delete'] == true) _action('delete', Icons.delete_outline, 'Löschen'),
+    ];
+    if (items.isEmpty) return;
+    final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final action = await showMenu<String>(
       context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (body.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.copy),
-                title: const Text('Kopieren'),
-                onTap: () => Navigator.pop(context, 'copy'),
-              ),
-            if (message['can_delete'] == true)
-              ListTile(
-                key: const Key('chat-message-delete'),
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('Löschen'),
-                onTap: () => Navigator.pop(context, 'delete'),
-              ),
-          ],
-        ),
-      ),
+      position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
+      items: items,
     );
     if (!mounted) return;
     switch (action) {
+      case 'react':
+        final mine = _myReaction(message);
+        final emoji = await pickReaction(context, current: mine);
+        if (emoji != null) await _react(message, emoji);
+      case 'reply':
+        setState(() {
+          _replyTo = message;
+          _emoji = false;
+        });
+        _focus.requestFocus();
       case 'copy':
         await Clipboard.setData(ClipboardData(text: body));
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Kopiert.')));
+      case 'forward':
+        final messenger = ScaffoldMessenger.of(context);
+        final to = await Navigator.of(context).push<String>(
+          MaterialPageRoute(
+            builder: (_) => _ForwardScreen(familyId: widget.familyId, message: message),
+          ),
+        );
+        if (to != null) messenger.showSnackBar(SnackBar(content: Text('An „$to“ weitergeleitet.')));
+        if (mounted) await _load();
       case 'delete':
         if (!await confirm(
           context,
           'Nachricht löschen?',
-          message: 'Für alle. An ihrer Stelle steht dann „Nachricht gelöscht“.',
+          message: 'Für alle. An ihrer Stelle steht dann „Nachricht wurde gelöscht“.',
         )) {
           return;
         }
         if (!mounted) return;
         final session = SessionScope.of(context);
         if (await guarded(context, () => session.api.delete('$_base/messages/${message['id']}'))) await _load();
+    }
+  }
+
+  String? _myReaction(Map<String, dynamic> message) =>
+      (message['reactions'] as List? ?? const [])
+              .cast<Map<String, dynamic>>()
+              .where((r) => r['mine'] == true)
+              .firstOrNull?['emoji']
+          as String?;
+
+  /// Reacts with [emoji]; the same one again takes it back.
+  Future<void> _react(Map<String, dynamic> message, String emoji) async {
+    final session = SessionScope.of(context);
+    final next = _myReaction(message) == emoji ? '' : emoji;
+    if (await guarded(context, () => session.api.put('$_base/messages/${message['id']}/reaction', {'emoji': next}))) {
+      await _load();
     }
   }
 
@@ -516,7 +558,8 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
           message: message,
           group: group,
           base: _base,
-          onLongPress: () => _messageMenu(message),
+          onMenu: (at) => _messageMenu(message, at),
+          onReaction: _canWrite ? (emoji) => _react(message, emoji) : null,
           onOpenFile: _openFile,
           avatar: _avatarOf(message),
         ),
@@ -545,77 +588,96 @@ class _ChatScreenState extends State<ChatScreen> with LiveReload {
   }
 
   Widget _composer() {
+    final replyTo = _replyTo;
     return SafeArea(
       top: false,
       minimum: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            key: const Key('chat-emoji'),
-            tooltip: _emoji ? 'Tastatur' : 'Emojis',
-            icon: Icon(_emoji ? Icons.keyboard_outlined : Icons.emoji_emotions_outlined),
-            onPressed: _toggleEmoji,
-          ),
-          PopupMenuButton<bool>(
-            key: const Key('chat-attach'),
-            tooltip: 'Anhängen',
-            icon: const Icon(Icons.attach_file),
-            position: PopupMenuPosition.over,
-            onSelected: (pictures) => _attach(pictures: pictures),
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: true,
-                child: ListTile(
-                  leading: Icon(Icons.image_outlined),
-                  title: Text('Bild'),
-                  contentPadding: EdgeInsets.zero,
-                ),
+          if (replyTo != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: _Quote(
+                replyTo,
+                foreground: Theme.of(context).colorScheme.onSurface,
+                onClose: () => setState(() => _replyTo = null),
               ),
-              PopupMenuItem(
-                value: false,
-                child: ListTile(
-                  leading: Icon(Icons.description_outlined),
-                  title: Text('Dokument'),
-                  contentPadding: EdgeInsets.zero,
-                ),
+            ),
+          _inputRow(),
+        ],
+      ),
+    );
+  }
+
+  Widget _inputRow() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        IconButton(
+          key: const Key('chat-emoji'),
+          tooltip: _emoji ? 'Tastatur' : 'Emojis',
+          icon: Icon(_emoji ? Icons.keyboard_outlined : Icons.emoji_emotions_outlined),
+          onPressed: _toggleEmoji,
+        ),
+        PopupMenuButton<bool>(
+          key: const Key('chat-attach'),
+          tooltip: 'Anhängen',
+          icon: const Icon(Icons.attach_file),
+          position: PopupMenuPosition.over,
+          onSelected: (pictures) => _attach(pictures: pictures),
+          itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: true,
+              child: ListTile(
+                leading: Icon(Icons.image_outlined),
+                title: Text('Bild'),
+                contentPadding: EdgeInsets.zero,
               ),
-            ],
-          ),
-          Expanded(
-            child: CallbackShortcuts(
-              // On a keyboard Enter sends, Shift + Enter starts a new line.
-              bindings: {
-                const SingleActivator(LogicalKeyboardKey.enter): _send,
-                const SingleActivator(LogicalKeyboardKey.numpadEnter): _send,
-              },
-              child: TextField(
-                key: const Key('chat-input'),
-                controller: _input,
-                focusNode: _focus,
-                minLines: 1,
-                maxLines: 5,
-                maxLength: 4000,
-                textCapitalization: TextCapitalization.sentences,
-                keyboardType: TextInputType.multiline,
-                decoration: const InputDecoration(
-                  hintText: 'Nachricht',
-                  counterText: '',
-                  isDense: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(24))),
-                ),
+            ),
+            PopupMenuItem(
+              value: false,
+              child: ListTile(
+                leading: Icon(Icons.description_outlined),
+                title: Text('Dokument'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
+        ),
+        Expanded(
+          child: CallbackShortcuts(
+            // On a keyboard Enter sends, Shift + Enter starts a new line.
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.enter): _send,
+              const SingleActivator(LogicalKeyboardKey.numpadEnter): _send,
+            },
+            child: TextField(
+              key: const Key('chat-input'),
+              controller: _input,
+              focusNode: _focus,
+              minLines: 1,
+              maxLines: 5,
+              maxLength: 4000,
+              textCapitalization: TextCapitalization.sentences,
+              keyboardType: TextInputType.multiline,
+              decoration: const InputDecoration(
+                hintText: 'Nachricht',
+                counterText: '',
+                isDense: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(24))),
               ),
             ),
           ),
-          const SizedBox(width: 4),
-          IconButton.filled(
-            key: const Key('chat-send'),
-            tooltip: 'Senden',
-            icon: const Icon(Icons.send),
-            onPressed: _sending || _input.text.trim().isEmpty ? null : _send,
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 4),
+        IconButton.filled(
+          key: const Key('chat-send'),
+          tooltip: 'Senden',
+          icon: const Icon(Icons.send),
+          onPressed: _sending || _input.text.trim().isEmpty ? null : _send,
+        ),
+      ],
     );
   }
 }
@@ -654,16 +716,22 @@ class _Bubble extends StatelessWidget {
     required this.message,
     required this.group,
     required this.base,
-    required this.onLongPress,
+    required this.onMenu,
     required this.onOpenFile,
+    this.onReaction,
     this.avatar,
   });
 
   final Map<String, dynamic> message;
   final bool group;
   final String base;
-  final VoidCallback onLongPress;
+
+  /// Opens what to do with the message, where it was tapped.
+  final void Function(Offset at) onMenu;
   final void Function(Map<String, dynamic> file) onOpenFile;
+
+  /// Reacts with the emoji of a reaction that is there; null for who only reads.
+  final void Function(String emoji)? onReaction;
 
   /// The picture of who wrote it, for the messages of others.
   final Widget? avatar;
@@ -681,6 +749,9 @@ class _Bubble extends StatelessWidget {
     final at = DateTime.tryParse(message['created_at'] as String? ?? '')?.toLocal();
     final senderColor = message['sender_color'] as String? ?? '';
     final session = SessionScope.of(context);
+    final reactions = (message['reactions'] as List? ?? const []).cast<Map<String, dynamic>>();
+    final reply = message['reply'] as Map<String, dynamic>?;
+    final quiet = TextStyle(color: foreground.withValues(alpha: 0.7), fontStyle: FontStyle.italic);
     final bubble = Align(
       alignment: own ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
@@ -691,124 +762,148 @@ class _Bubble extends StatelessWidget {
             MediaQuery.sizeOf(context).width * 0.8 - (own || this.avatar == null ? 0 : _avatarSize + _avatarGap),
           ),
         ),
-        child: GestureDetector(
-          key: ValueKey('chat-message-${message['id']}'),
-          onLongPress: onLongPress,
-          onSecondaryTap: onLongPress,
-          child: Container(
-            margin: const EdgeInsets.only(top: 2, bottom: 8),
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
-            decoration: BoxDecoration(
-              color: background,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(16),
-                topRight: const Radius.circular(16),
-                bottomLeft: Radius.circular(own ? 16 : 4),
-                bottomRight: Radius.circular(own ? 4 : 16),
-              ),
-            ),
-            // As wide as what it holds, so that a short message stays short; the time still sits on the right.
-            child: IntrinsicWidth(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (group && !own)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        (message['sender_name'] as String? ?? '').isEmpty
-                            ? 'Ehemaliges Mitglied'
-                            : message['sender_name'] as String,
-                        style: theme.textTheme.labelLarge?.copyWith(
-                          color: senderColor.isEmpty ? scheme.primary : parseHexColor(senderColor),
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  if (deleted)
-                    Text(
-                      'Nachricht gelöscht',
-                      style: TextStyle(color: foreground.withValues(alpha: 0.7), fontStyle: FontStyle.italic),
-                    ),
-                  for (final file in files)
-                    if (file['kind'] == 'photo')
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: InkWell(
-                          key: ValueKey('chat-picture-${file['id']}'),
-                          onTap: () => onOpenFile(file),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                maxWidth: 260,
-                                maxHeight: 320,
-                                minWidth: 120,
-                                minHeight: 80,
-                              ),
-                              child: FutureBuilder<Uint8List>(
-                                future: _picture(session, '$base/attachments/${file['id']}'),
-                                builder: (context, snapshot) => snapshot.hasData
-                                    ? Image.memory(snapshot.data!, fit: BoxFit.cover)
-                                    : Container(
-                                        width: 200,
-                                        height: 150,
-                                        color: scheme.surfaceContainerHighest,
-                                        child: snapshot.hasError ? const Icon(Icons.broken_image_outlined) : null,
-                                      ),
-                              ),
+        child: Column(
+          crossAxisAlignment: own ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GestureDetector(
+              key: ValueKey('chat-message-${message['id']}'),
+              onTapUp: (details) => onMenu(details.globalPosition),
+              onLongPressStart: (details) => onMenu(details.globalPosition),
+              onSecondaryTapUp: (details) => onMenu(details.globalPosition),
+              child: Container(
+                margin: EdgeInsets.only(top: 2, bottom: reactions.isEmpty ? 8 : 2),
+                padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+                decoration: BoxDecoration(
+                  color: background,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(16),
+                    topRight: const Radius.circular(16),
+                    bottomLeft: Radius.circular(own ? 16 : 4),
+                    bottomRight: Radius.circular(own ? 4 : 16),
+                  ),
+                ),
+                // As wide as what it holds, so that a short message stays short; the time still sits on the right.
+                child: IntrinsicWidth(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (group && !own)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            (message['sender_name'] as String? ?? '').isEmpty
+                                ? 'Ehemaliges Mitglied'
+                                : message['sender_name'] as String,
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              color: senderColor.isEmpty ? scheme.primary : parseHexColor(senderColor),
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
                         ),
-                      )
-                    else
-                      InkWell(
-                        key: ValueKey('chat-file-${file['id']}'),
-                        onTap: () => onOpenFile(file),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.description_outlined, color: foreground),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      file['name'] as String? ?? '',
-                                      style: TextStyle(color: foreground, decoration: TextDecoration.underline),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    Text(
-                                      _fileSize((file['size'] as num?) ?? 0),
-                                      style: theme.textTheme.labelSmall?.copyWith(color: foreground),
-                                    ),
-                                  ],
+                      if (message['forwarded'] == true && !deleted)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.shortcut, size: 14, color: quiet.color),
+                            const SizedBox(width: 4),
+                            Text('Weitergeleitet', style: quiet.copyWith(fontSize: 12)),
+                          ],
+                        ),
+                      if (reply != null && !deleted) _Quote(reply, foreground: foreground),
+                      if (deleted) Text('Nachricht wurde gelöscht', style: quiet),
+                      for (final file in files)
+                        if (file['kind'] == 'photo')
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: InkWell(
+                              key: ValueKey('chat-picture-${file['id']}'),
+                              onTap: () => onOpenFile(file),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 260,
+                                    maxHeight: 320,
+                                    minWidth: 120,
+                                    minHeight: 80,
+                                  ),
+                                  child: FutureBuilder<Uint8List>(
+                                    future: _picture(session, '$base/attachments/${file['id']}'),
+                                    builder: (context, snapshot) => snapshot.hasData
+                                        ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+                                        : Container(
+                                            width: 200,
+                                            height: 150,
+                                            color: scheme.surfaceContainerHighest,
+                                            child: snapshot.hasError ? const Icon(Icons.broken_image_outlined) : null,
+                                          ),
+                                  ),
                                 ),
                               ),
-                            ],
+                            ),
+                          )
+                        else
+                          InkWell(
+                            key: ValueKey('chat-file-${file['id']}'),
+                            onTap: () => onOpenFile(file),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.description_outlined, color: foreground),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          file['name'] as String? ?? '',
+                                          style: TextStyle(color: foreground, decoration: TextDecoration.underline),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        Text(
+                                          _fileSize((file['size'] as num?) ?? 0),
+                                          style: theme.textTheme.labelSmall?.copyWith(color: foreground),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      if (body.isNotEmpty) Text(body, style: TextStyle(color: foreground, fontSize: 15)),
+                      Align(
+                        alignment: Alignment.bottomRight,
+                        child: Text(
+                          at == null ? '' : timeFormat.format(at),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: foreground.withValues(alpha: 0.7),
+                            fontSize: 10,
                           ),
                         ),
                       ),
-                  if (body.isNotEmpty) Text(body, style: TextStyle(color: foreground, fontSize: 15)),
-                  Align(
-                    alignment: Alignment.bottomRight,
-                    child: Text(
-                      at == null ? '' : timeFormat.format(at),
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: foreground.withValues(alpha: 0.7),
-                        fontSize: 10,
-                      ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
-          ),
+            if (reactions.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    for (final reaction in reactions) _ReactionChip(message['id'] as String, reaction, onReaction),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -869,5 +964,323 @@ class ChatFromNotification extends StatelessWidget {
       );
     }
     return ChatScreen(familyId: familyId, chatId: chatId);
+  }
+}
+
+/// The reactions offered first; „Mehr“ shows all emojis.
+const quickReactions = ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁', '🙏'];
+
+/// Asks for an emoji to react with: one of [quickReactions], or any other. Null when
+/// left without choosing.
+Future<String?> pickReaction(BuildContext context, {String? current}) {
+  return showModalBottomSheet<String>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (context) => _ReactionPicker(current: current),
+  );
+}
+
+class _ReactionPicker extends StatefulWidget {
+  const _ReactionPicker({this.current});
+
+  final String? current;
+
+  @override
+  State<_ReactionPicker> createState() => _ReactionPickerState();
+}
+
+class _ReactionPickerState extends State<_ReactionPicker> {
+  bool _all = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (_all) {
+      return SafeArea(
+        child: EmojiPicker(
+          onEmojiSelected: (_, emoji) => Navigator.pop(context, emoji.emoji),
+          config: Config(
+            height: 320,
+            locale: const Locale('de'),
+            checkPlatformCompatibility: !kIsWeb,
+            emojiViewConfig: EmojiViewConfig(backgroundColor: scheme.surface),
+            categoryViewConfig: CategoryViewConfig(
+              backgroundColor: scheme.surface,
+              indicatorColor: scheme.primary,
+              iconColorSelected: scheme.primary,
+            ),
+            bottomActionBarConfig: BottomActionBarConfig(
+              backgroundColor: scheme.surfaceContainerHigh,
+              buttonColor: scheme.surfaceContainerHigh,
+              buttonIconColor: scheme.onSurfaceVariant,
+              showBackspaceButton: false,
+            ),
+            searchViewConfig: SearchViewConfig(backgroundColor: scheme.surface, hintText: 'Emoji suchen'),
+          ),
+        ),
+      );
+    }
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            for (final emoji in quickReactions)
+              InkResponse(
+                key: ValueKey('reaction-$emoji'),
+                radius: 28,
+                onTap: () => Navigator.pop(context, emoji),
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: emoji == widget.current ? scheme.primaryContainer : null,
+                  ),
+                  child: Text(emoji, style: const TextStyle(fontSize: 28)),
+                ),
+              ),
+            IconButton.filledTonal(
+              key: const Key('reaction-more'),
+              tooltip: 'Mehr',
+              iconSize: 28,
+              icon: const Icon(Icons.add),
+              onPressed: () => setState(() => _all = true),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One emoji under a message, with how many reacted so; tapping it reacts the same,
+/// or takes one's own back.
+class _ReactionChip extends StatelessWidget {
+  const _ReactionChip(this.messageId, this.reaction, this.onReaction);
+
+  final String messageId;
+  final Map<String, dynamic> reaction;
+  final void Function(String emoji)? onReaction;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final emoji = reaction['emoji'] as String;
+    final count = (reaction['count'] as num?)?.toInt() ?? 1;
+    final mine = reaction['mine'] == true;
+    final names = (reaction['names'] as List? ?? const []).cast<String>();
+    final onReaction = this.onReaction;
+    return Tooltip(
+      message: names.join(', '),
+      child: Material(
+        key: ValueKey('chat-reaction-$messageId-$emoji'),
+        color: mine ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+        shape: StadiumBorder(side: BorderSide(color: mine ? scheme.primary : scheme.outlineVariant)),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onReaction == null ? null : () => onReaction(emoji),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            child: Text(count > 1 ? '$emoji $count' : emoji, style: const TextStyle(fontSize: 15)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What a message shows of the one it answers: who wrote it and the start of it.
+class _Quote extends StatelessWidget {
+  const _Quote(this.reply, {required this.foreground, this.onClose});
+
+  final Map<String, dynamic> reply;
+  final Color foreground;
+
+  /// Shows a button to drop the answer, above the field.
+  final VoidCallback? onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final name = reply['sender_name'] as String? ?? '';
+    final text = reply['deleted'] == true ? 'Nachricht wurde gelöscht' : messagePreview(reply);
+    return Container(
+      key: Key(onClose == null ? 'chat-quote' : 'chat-reply'),
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+      decoration: BoxDecoration(
+        color: foreground.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            fit: onClose == null ? FlexFit.loose : FlexFit.tight,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name.isEmpty ? 'Ehemaliges Mitglied' : name,
+                  style: TextStyle(color: scheme.primary, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+                Text(
+                  text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: foreground.withValues(alpha: 0.8), fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          if (onClose != null)
+            IconButton(
+              key: const Key('chat-reply-cancel'),
+              tooltip: 'Nicht antworten',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close, size: 18),
+              onPressed: onClose,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Picks the chat a message goes on to: any the user writes in, in all circles.
+/// Pops with its name once it is sent.
+class _ForwardScreen extends StatefulWidget {
+  const _ForwardScreen({required this.familyId, required this.message});
+
+  /// The circle the message is in.
+  final String familyId;
+  final Map<String, dynamic> message;
+
+  @override
+  State<_ForwardScreen> createState() => _ForwardScreenState();
+}
+
+class _ForwardScreenState extends State<_ForwardScreen> {
+  final _search = TextEditingController();
+  List<Map<String, dynamic>>? _chats;
+  String? _error;
+  bool _sending = false;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final session = SessionScope.of(context);
+    try {
+      final rows = (await session.api.get('/api/chats') as List).cast<Map<String, dynamic>>();
+      if (mounted) setState(() => _chats = rows.where((c) => c['can_write'] == true).toList());
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
+  }
+
+  Future<void> _send(Map<String, dynamic> chat) async {
+    if (_sending) return;
+    final name = chat['name'] as String? ?? '';
+    if (!await confirm(context, 'An „$name“ weiterleiten?', action: 'Weiterleiten') || !mounted) return;
+    final session = SessionScope.of(context);
+    final navigator = Navigator.of(context);
+    setState(() => _sending = true);
+    final ok = await guarded(
+      context,
+      () => session.api.post('/api/families/${chat['family_id']}/chats/${chat['id']}/messages', {
+        'forward_of': widget.message['id'],
+        'forward_family_id': widget.familyId,
+      }),
+    );
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (ok) navigator.pop(name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = SessionScope.of(context);
+    final key = _search.text.trim().toLowerCase();
+    final chats = _chats?.where((c) => (c['name'] as String? ?? '').toLowerCase().contains(key)).toList();
+    final several = session.families.length > 1;
+    final message = widget.message;
+    final files = (message['attachments'] as List? ?? const []).cast<Map<String, dynamic>>();
+    final body = message['body'] as String? ?? '';
+    final preview = body.isNotEmpty ? body : files.map((f) => '📎 ${f['name']}').join(', ');
+    return Scaffold(
+      appBar: AppBar(title: const Text('Weiterleiten an')),
+      body: Column(
+        children: [
+          if (_sending) const LinearProgressIndicator(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                preview,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontStyle: FontStyle.italic),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: TextField(
+              key: const Key('forward-search'),
+              controller: _search,
+              decoration: const InputDecoration(hintText: 'Chat suchen', prefixIcon: Icon(Icons.search), isDense: true),
+            ),
+          ),
+          Expanded(
+            child: chats == null
+                ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
+                : chats.isEmpty
+                ? const EmptyHint(icon: Icons.chat_bubble_outline, text: 'Kein Chat gefunden.')
+                : ListView(
+                    padding: scrollPadding(context, EdgeInsets.zero),
+                    children: [
+                      for (final chat in chats)
+                        ListTile(
+                          key: ValueKey('forward-${chat['id']}'),
+                          leading: ChatAvatar(chat, radius: 20),
+                          title: Text(chat['name'] as String? ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          trailing: several ? CircleLabel(chat['family_id'] as String) : null,
+                          onTap: () => _send(chat),
+                        ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
   }
 }

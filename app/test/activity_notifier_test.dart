@@ -117,6 +117,19 @@ void main() {
       session.live.emit(const LiveEvent('f1', 'messages'));
       await tester.pump(const Duration(seconds: 2));
       expect(notifications.shown.map((n) => (n.$2, n.$3)), [('Urlaub', 'Ben: Ans Meer!'), ('Ben', 'Kommst du?')]);
+
+      // A reaction of someone else to one's own message, once.
+      notifications.shown.clear();
+      backend.chats.first['reaction'] = {
+        'emoji': '❤️',
+        'created_at': DateTime.utc(2026, 11, 24, 11).toIso8601String(),
+        'text': 'Ben hat mit ❤️ auf „Pizza?“ reagiert.',
+      };
+      session.live.emit(const LiveEvent('f1', 'messages'));
+      await tester.pump(const Duration(seconds: 2));
+      session.live.emit(const LiveEvent('f1', 'messages'));
+      await tester.pump(const Duration(seconds: 2));
+      expect(notifications.shown.map((n) => (n.$2, n.$3)), [('Urlaub', 'Ben hat mit ❤️ auf „Pizza?“ reagiert.')]);
     });
 
     testWidgets('melden Neues anderer, solange die App im Hintergrund ist', (tester) async {

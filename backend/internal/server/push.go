@@ -86,6 +86,91 @@ func (s *Server) sendPushes(ctx context.Context, at time.Time) {
 	if err := s.sendDueChatPushes(ctx, at); err != nil {
 		log.Printf("Push-Nachrichten zu Nachrichten: %v", err)
 	}
+	if err := s.sendDueReactionPushes(ctx, at); err != nil {
+		log.Printf("Push-Nachrichten zu Reaktionen: %v", err)
+	}
+}
+
+// reactionText tells the author of a message of a reaction to it.
+func reactionText(reactor, emoji, body string, photos int, fileName string) string {
+	if reactor == "" {
+		reactor = "Jemand"
+	}
+	quote := strings.Join(strings.Fields(body), " ")
+	switch {
+	case photos > 0:
+		quote = "dein Bild"
+	case fileName != "":
+		quote = "„" + fileName + "“"
+	case len([]rune(quote)) > 60:
+		quote = "„" + string([]rune(quote)[:60]) + "…“"
+	case quote != "":
+		quote = "„" + quote + "“"
+	}
+	if quote == "" {
+		return reactor + " hat mit " + emoji + " auf deine Nachricht reagiert."
+	}
+	return reactor + " hat mit " + emoji + " auf " + quote + " reagiert."
+}
+
+// sendDueReactionPushes tells the author of a message once of each new reaction of
+// someone else to it.
+func (s *Server) sendDueReactionPushes(ctx context.Context, at time.Time) error {
+	rows, err := queryRows(ctx, s.db,
+		`SELECT x.message_id, x.user_id, x.emoji, x.created_at, m.chat_id, m.family_id, m.body,
+			COALESCE(m.sender_id, '') AS author, ch.kind, ch.name AS chat_name, COALESCE(f.name, '') AS family_name,
+			COALESCE(ms.name, '') AS reactor_name,
+			COALESCE((SELECT MIN(y.name) FROM files y WHERE y.chat_message_id = m.id), '') AS file_name,
+			(SELECT COUNT(*) FROM files y WHERE y.chat_message_id = m.id AND y.kind = 'photo') AS photos
+		 FROM chat_reactions x JOIN chat_messages m ON m.id = x.message_id JOIN chats ch ON ch.id = m.chat_id
+		 LEFT JOIN families f ON f.id = m.family_id
+		 LEFT JOIN memberships ms ON ms.family_id = m.family_id AND ms.user_id = x.user_id
+		 WHERE x.pushed_at IS NULL AND m.deleted_at IS NULL AND x.created_at > ?
+		 ORDER BY x.created_at LIMIT 200`,
+		at.Add(-pushWindow).UTC().Format(chatTimeFormat))
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		author := row["author"].(string)
+		if author != "" && author != row["user_id"] {
+			devices, err := queryRows(ctx, s.db,
+				`SELECT d.token, (SELECT COUNT(*) FROM memberships o WHERE o.user_id = d.user_id) AS families
+				 FROM push_devices d WHERE d.user_id = ?`, author)
+			if err != nil {
+				return err
+			}
+			reactor := row["reactor_name"].(string)
+			title := reactor
+			if row["kind"] == "group" || title == "" {
+				title = row["chat_name"].(string)
+			}
+			body := reactionText(reactor, row["emoji"].(string), row["body"].(string), anyInt(row["photos"]), row["file_name"].(string))
+			for _, device := range devices {
+				shown := title
+				if anyInt(device["families"]) > 1 && row["family_name"] != "" {
+					shown += " · " + row["family_name"].(string)
+				}
+				token := device["token"].(string)
+				err := s.push.Push(ctx, PushMessage{
+					Token: token, Title: shown, Body: body, Tag: "reaction-" + row["message_id"].(string) + "-" + row["user_id"].(string),
+					Data: map[string]string{"kintura": "message", "family_id": row["family_id"].(string), "chat_id": row["chat_id"].(string)},
+				})
+				if errors.Is(err, errPushGone) {
+					if _, err := s.db.ExecContext(ctx, `DELETE FROM push_devices WHERE token = ?`, token); err != nil {
+						return err
+					}
+				} else if err != nil {
+					log.Printf("Push-Nachricht: %v", err)
+				}
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE chat_reactions SET pushed_at = ? WHERE message_id = ? AND user_id = ?`,
+			chatNow(), row["message_id"], row["user_id"]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sendDueChatPushes sends each new message once to the devices of the people of its

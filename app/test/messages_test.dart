@@ -1,6 +1,6 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart' show EmojiPicker;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kintura/notifications/push.dart';
 import 'package:kintura/screens/chat_screen.dart';
@@ -48,7 +48,12 @@ Map<String, Object?> _chat(
         },
 };
 
-Map<String, Object?> _message(String id, String body, {bool own = false, List<Map<String, Object?>> files = const []}) => {
+Map<String, Object?> _message(
+  String id,
+  String body, {
+  bool own = false,
+  List<Map<String, Object?>> files = const [],
+}) => {
   'id': id,
   'sender_id': own ? 'u1' : 'u2',
   'sender_name': own ? 'Anna' : 'Ben',
@@ -225,8 +230,15 @@ void main() {
     tester.view.physicalSize = const Size(320, 640);
     await tester.pumpAndSettle();
     backend.chatMessages['c1'] = [
-      _message('m1', 'Das ist eine sehr lange Nachricht, die über mehrere Zeilen geht und gern die ganze Breite hätte.'),
-      _message('m2', 'Und eine eigene, ebenso lang, damit auch die rechte Seite frei bleibt, wie es sich gehört.', own: true),
+      _message(
+        'm1',
+        'Das ist eine sehr lange Nachricht, die über mehrere Zeilen geht und gern die ganze Breite hätte.',
+      ),
+      _message(
+        'm2',
+        'Und eine eigene, ebenso lang, damit auch die rechte Seite frei bleibt, wie es sich gehört.',
+        own: true,
+      ),
       _message('m3', 'Ok', own: true),
       _message('m4', 'Ja'),
     ];
@@ -269,13 +281,20 @@ void main() {
   });
 
   testWidgets('Bilder und Dokumente kommen als eigene Nachrichten, eigene lassen sich löschen', (tester) async {
-    ChatScreen.pickFiles = ({required bool pictures}) async => [PickedFile('plan.pdf', Uint8List.fromList([1, 2, 3]))];
+    ChatScreen.pickFiles = ({required bool pictures}) async => [
+      PickedFile('plan.pdf', Uint8List.fromList([1, 2, 3])),
+    ];
     addTearDown(() => ChatScreen.pickFiles = ({required bool pictures}) async => []);
     final backend = await _openMessages(tester, [_chat('c1', 'Urlaub', last: 'Hier der Plan')]);
     backend.chatMessages['c1'] = [
-      _message('m1', '', own: true, files: [
-        {'id': 'f1', 'name': 'plan.pdf', 'mime': 'application/pdf', 'size': 2048, 'kind': 'document'},
-      ]),
+      _message(
+        'm1',
+        '',
+        own: true,
+        files: [
+          {'id': 'f1', 'name': 'plan.pdf', 'mime': 'application/pdf', 'size': 2048, 'kind': 'document'},
+        ],
+      ),
     ];
     await tester.tap(find.text('Urlaub'));
     await tester.pumpAndSettle();
@@ -290,7 +309,10 @@ void main() {
 
     await tester.longPress(find.byKey(const ValueKey('chat-message-m1')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('chat-message-delete')));
+    // A document cannot go into the clipboard.
+    expect(find.byKey(const Key('chat-action-copy')), findsNothing);
+    expect(find.byKey(const Key('chat-action-forward')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('chat-action-delete')));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
     await tester.pumpAndSettle();
@@ -306,10 +328,18 @@ void main() {
 
     final backend = FakeBackend()
       ..extraFamilies.add({
-        'id': 'f2', 'name': 'Kegelclub', 'type': 'friends', 'role': 'user', 'is_admin': false, 'color': '',
+        'id': 'f2',
+        'name': 'Kegelclub',
+        'type': 'friends',
+        'role': 'user',
+        'is_admin': false,
+        'color': '',
         'family_color': '#7B4FB0',
       })
-      ..chats = [_chat('c1', 'Urlaub', last: 'Ans Meer!'), {..._chat('c2', 'Kegeln', last: 'Freitag?'), 'family_id': 'f2'}];
+      ..chats = [
+        _chat('c1', 'Urlaub', last: 'Ans Meer!'),
+        {..._chat('c2', 'Kegeln', last: 'Freitag?'), 'family_id': 'f2'},
+      ];
     await pumpApp(tester, backend, MemoryTokens()..token = 't1');
     await tester.tap(find.text('Nachrichten'));
     await tester.pumpAndSettle();
@@ -319,11 +349,132 @@ void main() {
     await tester.tap(find.widgetWithText(CheckedPopupMenuItem<bool>, 'Alle Kreise'));
     await tester.pumpAndSettle();
     expect(messagesOfAllCircles.value, isTrue);
-    expect(find.descendant(of: find.byKey(const ValueKey('circle-f2')), matching: find.text('Kegelclub')), findsOneWidget);
+    expect(
+      find.descendant(of: find.byKey(const ValueKey('circle-f2')), matching: find.text('Kegelclub')),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('circle-f1')), findsOneWidget);
     await disposeApp(tester);
   });
 
+  group('Antippen einer Nachricht', () {
+    Future<FakeBackend> openChat(WidgetTester tester) async {
+      final backend = await _openMessages(tester, [
+        _chat('c1', 'Urlaub', last: 'Wohin?'),
+        _chat('c2', 'Einkauf', last: 'Milch'),
+        _chat('c3', 'Elternrat', canWrite: false, last: 'Montag'),
+      ]);
+      backend.chatMessages['c1'] = [_message('m1', 'Wohin fahren wir?')];
+      await tester.tap(find.text('Urlaub'));
+      await tester.pumpAndSettle();
+      return backend;
+    }
+
+    Future<void> menu(WidgetTester tester, String action) async {
+      await tester.tap(find.byKey(const ValueKey('chat-message-m1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(Key('chat-action-$action')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('öffnet Reaktion, Antworten, Kopieren und Weiterleiten, Löschen nur bei eigenen', (tester) async {
+      await openChat(tester);
+      await tester.tap(find.byKey(const ValueKey('chat-message-m1')));
+      await tester.pumpAndSettle();
+      for (final action in ['react', 'reply', 'copy', 'forward']) {
+        expect(find.byKey(Key('chat-action-$action')), findsOneWidget, reason: action);
+      }
+      expect(find.byKey(const Key('chat-action-delete')), findsNothing);
+      expect(find.text('Reaktion'), findsOneWidget);
+      expect(find.text('Weiterleiten'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('eine Reaktion steht unter der Nachricht, dieselbe nimmt sie zurück', (tester) async {
+      final backend = await openChat(tester);
+      await menu(tester, 'react');
+      for (final emoji in ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁', '🙏']) {
+        expect(find.byKey(ValueKey('reaction-$emoji')), findsOneWidget, reason: emoji);
+      }
+      await tester.tap(find.byKey(const ValueKey('reaction-🔥')));
+      await tester.pumpAndSettle();
+      expect(backend.writes['PUT messages/m1/reaction'], {'emoji': '🔥'});
+      final bubble = tester.getRect(find.byKey(const ValueKey('chat-message-m1')));
+      final chip = tester.getRect(find.byKey(const ValueKey('chat-reaction-m1-🔥')));
+      expect(chip.top, greaterThanOrEqualTo(bubble.bottom));
+
+      // Tapping one's own takes it back.
+      await tester.tap(find.byKey(const ValueKey('chat-reaction-m1-🔥')));
+      await tester.pumpAndSettle();
+      expect(backend.writes['PUT messages/m1/reaction'], {'emoji': ''});
+      expect(find.byKey(const ValueKey('chat-reaction-m1-🔥')), findsNothing);
+
+      // All the others behind „Mehr“.
+      await menu(tester, 'react');
+      await tester.tap(find.byKey(const Key('reaction-more')));
+      await tester.pumpAndSettle();
+      expect(find.byType(EmojiPicker), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('eine Antwort zitiert die Nachricht, über dem Feld und danach in der Antwort', (tester) async {
+      final backend = await openChat(tester);
+      await menu(tester, 'reply');
+      expect(find.byKey(const Key('chat-reply')), findsOneWidget);
+      expect(tester.widget<TextField>(find.byKey(const Key('chat-input'))).focusNode!.hasFocus, isTrue);
+      // Dropped and taken up again.
+      await tester.tap(find.byKey(const Key('chat-reply-cancel')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('chat-reply')), findsNothing);
+      await menu(tester, 'reply');
+
+      await tester.enterText(find.byKey(const Key('chat-input')), 'Ans Meer!');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('chat-send')));
+      await tester.pumpAndSettle();
+      expect(backend.writes['POST messages'], {'body': 'Ans Meer!', 'reply_to': 'm1'});
+      expect(find.byKey(const Key('chat-reply')), findsNothing);
+      expect(find.byKey(const Key('chat-quote')), findsOneWidget);
+      expect(
+        find.descendant(of: find.byKey(const Key('chat-quote')), matching: find.text('Wohin fahren wir?')),
+        findsOneWidget,
+      );
+      await disposeApp(tester);
+    });
+
+    testWidgets('Kopieren legt den Text in die Zwischenablage', (tester) async {
+      await openChat(tester);
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      await menu(tester, 'copy');
+      expect(copied, 'Wohin fahren wir?');
+      expect(find.text('Kopiert.'), findsOneWidget);
+      await disposeApp(tester);
+    });
+
+    testWidgets('Weiterleiten in einen anderen Chat, nicht in einen nur zum Mitlesen', (tester) async {
+      final backend = await openChat(tester);
+      await menu(tester, 'forward');
+      expect(find.text('Weiterleiten an'), findsOneWidget);
+      expect(find.byKey(const ValueKey('forward-c2')), findsOneWidget);
+      expect(find.byKey(const ValueKey('forward-c3')), findsNothing);
+      await tester.enterText(find.byKey(const Key('forward-search')), 'ein');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('forward-c1')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('forward-c2')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Weiterleiten'));
+      await tester.pumpAndSettle();
+      expect(backend.writes['POST messages'], {'forward_of': 'm1', 'forward_family_id': 'f1'});
+      expect(find.text('An „Einkauf“ weitergeleitet.'), findsOneWidget);
+      expect(find.text('Weiterleiten an'), findsNothing);
+      await disposeApp(tester);
+    });
+  });
   test('eine Benachrichtigung führt zu Aktuelles oder zu einem Chat', () {
     expect(OpenTarget.fromPush(true), const OpenTarget.activities());
     expect(OpenTarget.fromPush({'kind': 'activity', 'family_id': 'f1', 'chat_id': ''}), const OpenTarget.activities());
@@ -333,6 +484,6 @@ void main() {
     expect(OpenTarget.fromPayload('f1'), const OpenTarget.activities());
     expect(messagePreview({'body': 'Hallo\n  du', 'photos': 0}), 'Hallo du');
     expect(messagePreview({'body': '', 'photos': 1}), '📷 Bild');
-    expect(messagePreview({'deleted': true, 'body': ''}), 'Nachricht gelöscht');
+    expect(messagePreview({'deleted': true, 'body': ''}), 'Nachricht wurde gelöscht');
   });
 }

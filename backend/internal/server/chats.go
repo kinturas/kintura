@@ -186,6 +186,28 @@ func (s *Server) userChats(ctx context.Context, c reqCtx, families []string) ([]
 		m["own"] = m["sender_id"] == c.userID
 		lastOf[chatID] = m
 	}
+	// The newest reaction of someone else to one's own messages, for the app to tell of it.
+	reactionArgs := append(append([]any{}, familyArgs...), c.userID, c.userID)
+	reacted, err := queryRows(ctx, s.db,
+		`SELECT m.chat_id, x.emoji, x.created_at, m.body, COALESCE(ms.name, '') AS reactor_name,
+			COALESCE((SELECT MIN(y.name) FROM files y WHERE y.chat_message_id = m.id), '') AS file_name,
+			(SELECT COUNT(*) FROM files y WHERE y.chat_message_id = m.id AND y.kind = 'photo') AS photos
+		 FROM chat_reactions x JOIN chat_messages m ON m.id = x.message_id JOIN chats ch ON ch.id = m.chat_id
+		 LEFT JOIN memberships ms ON ms.family_id = m.family_id AND ms.user_id = x.user_id
+		 WHERE ch.family_id IN (`+in+`) AND m.sender_id = ? AND x.user_id <> ? AND m.deleted_at IS NULL
+		 ORDER BY x.created_at`, reactionArgs...)
+	if err != nil {
+		return nil, err
+	}
+	reactionOf := map[string]map[string]any{}
+	for _, x := range reacted {
+		reactionOf[x["chat_id"].(string)] = map[string]any{
+			"emoji":      x["emoji"],
+			"created_at": x["created_at"],
+			"text": reactionText(x["reactor_name"].(string), x["emoji"].(string), x["body"].(string),
+				anyInt(x["photos"]), x["file_name"].(string)),
+		}
+	}
 	for _, row := range rows {
 		id, family := row["id"].(string), row["family_id"].(string)
 		ids := byChat[id]
@@ -226,6 +248,7 @@ func (s *Server) userChats(ctx context.Context, c reqCtx, families []string) ([]
 		} else {
 			row["last_message"] = nil
 		}
+		row["reaction"] = reactionOf[id]
 	}
 	return rows, nil
 }
@@ -582,7 +605,8 @@ func markRead(ctx context.Context, q dbtx, chatID, userID string) error {
 // --- Messages ---
 
 // listChatMessages is GET .../chats/{id}/messages: the newest, the oldest of them first,
-// or those before ?before=. more tells whether there are older ones.
+// or those before ?before=. more tells whether there are older ones. Each comes with its
+// files, the reactions to it and, for an answer, a little of the message it answers.
 func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, id := r.Context(), r.PathValue("id")
 	if err := s.chatAccess(ctx, c, id); err != nil {
@@ -594,7 +618,8 @@ func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request, c reqC
 	}
 	rows, err := queryRows(ctx, s.db,
 		`SELECT m.id, COALESCE(m.sender_id, '') AS sender_id, COALESCE(ms.name, u.name, '') AS sender_name,
-			COALESCE(ms.color, '') AS sender_color, m.body, m.created_at, m.deleted_at IS NOT NULL AS deleted
+			COALESCE(ms.color, '') AS sender_color, m.body, m.created_at, m.deleted_at IS NOT NULL AS deleted,
+			m.forwarded, COALESCE(m.reply_to, '') AS reply_to
 		 FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id
 		 LEFT JOIN memberships ms ON ms.user_id = m.sender_id AND ms.family_id = m.family_id
 		 WHERE m.chat_id = ? AND m.created_at < ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
@@ -619,28 +644,99 @@ func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request, c reqC
 		delete(f, "chat_message_id")
 		byMessage[message] = append(byMessage[message], f)
 	}
+	reactions, err := queryRows(ctx, s.db,
+		`SELECT x.message_id, x.user_id, x.emoji, COALESCE(ms.name, u.name, '') AS name
+		 FROM chat_reactions x JOIN chat_messages m ON m.id = x.message_id
+		 LEFT JOIN users u ON u.id = x.user_id
+		 LEFT JOIN memberships ms ON ms.user_id = x.user_id AND ms.family_id = m.family_id
+		 WHERE m.chat_id = ? AND m.created_at < ? ORDER BY x.created_at, x.user_id`, id, before)
+	if err != nil {
+		return err
+	}
+	reactionsOf := map[string][]map[string]any{}
+	for _, x := range reactions {
+		message := x["message_id"].(string)
+		list := reactionsOf[message]
+		var entry map[string]any
+		for _, e := range list {
+			if e["emoji"] == x["emoji"] {
+				entry = e
+			}
+		}
+		if entry == nil {
+			entry = map[string]any{"emoji": x["emoji"], "count": 0, "mine": false, "names": []string{}}
+			list = append(list, entry)
+		}
+		entry["count"] = entry["count"].(int) + 1
+		entry["names"] = append(entry["names"].([]string), x["name"].(string))
+		if x["user_id"] == c.userID {
+			entry["mine"] = true
+		}
+		reactionsOf[message] = list
+	}
+	quotes, err := s.chatQuotes(ctx, rows)
+	if err != nil {
+		return err
+	}
 	for _, row := range rows {
-		attachments := byMessage[row["id"].(string)]
+		messageID := row["id"].(string)
+		attachments := byMessage[messageID]
 		if attachments == nil {
 			attachments = []map[string]any{}
 		}
 		row["attachments"] = attachments
 		row["deleted"] = isTrue(row["deleted"])
+		row["forwarded"] = isTrue(row["forwarded"])
 		own := row["sender_id"] == c.userID
 		row["own"] = own
 		row["can_delete"] = own && row["deleted"] == false
+		list := reactionsOf[messageID]
+		if list == nil || row["deleted"] == true {
+			list = []map[string]any{}
+		}
+		row["reactions"] = list
+		row["reply"] = quotes[row["reply_to"].(string)]
+		delete(row, "reply_to")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": rows, "more": more})
 	return nil
 }
 
+// chatQuotes are the messages the rows answer, by id, with what an answer shows of them.
+func (s *Server) chatQuotes(ctx context.Context, rows []map[string]any) (map[string]any, error) {
+	quotes := map[string]any{}
+	for _, row := range rows {
+		replyTo := row["reply_to"].(string)
+		if replyTo == "" || quotes[replyTo] != nil {
+			continue
+		}
+		found, err := queryRows(ctx, s.db,
+			`SELECT m.id, COALESCE(m.sender_id, '') AS sender_id, COALESCE(ms.name, u.name, '') AS sender_name,
+				m.body, m.deleted_at IS NOT NULL AS deleted,
+				(SELECT COUNT(*) FROM files f WHERE f.chat_message_id = m.id AND f.kind = 'photo') AS photos,
+				(SELECT COUNT(*) FROM files f WHERE f.chat_message_id = m.id AND f.kind <> 'photo') AS documents
+			 FROM chat_messages m LEFT JOIN users u ON u.id = m.sender_id
+			 LEFT JOIN memberships ms ON ms.user_id = m.sender_id AND ms.family_id = m.family_id
+			 WHERE m.id = ?`, replyTo)
+		if err != nil {
+			return nil, err
+		}
+		if len(found) == 1 {
+			quote := found[0]
+			quote["deleted"] = isTrue(quote["deleted"])
+			quotes[replyTo] = quote
+		}
+	}
+	return quotes, nil
+}
+
 // addChatMessage writes a message in the transaction: the chat moves to the top, comes
 // back for whoever archived it, and the sender has read it.
-func addChatMessage(ctx context.Context, tx *database.Tx, c reqCtx, chatID, body string) (string, error) {
+func addChatMessage(ctx context.Context, tx *database.Tx, c reqCtx, chatID, body, replyTo string, forwarded bool) (string, error) {
 	id, at := newID(), chatNow()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO chat_messages (id, chat_id, family_id, sender_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, chatID, c.familyID, c.userID, body, at); err != nil {
+		`INSERT INTO chat_messages (id, chat_id, family_id, sender_id, body, created_at, reply_to, forwarded) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, chatID, c.familyID, c.userID, body, at, nullable(replyTo), forwarded); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chats SET last_message_at = ? WHERE id = ?`, at, chatID); err != nil {
@@ -663,27 +759,46 @@ func addChatMessage(ctx context.Context, tx *database.Tx, c reqCtx, chatID, body
 	return id, nil
 }
 
+// postChatMessage is POST .../chats/{id}/messages: words, maybe as the answer to a
+// message of the same chat; or a message forwarded from another chat the user sees,
+// with its files, which are copied.
 func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	ctx, chatID := r.Context(), r.PathValue("id")
 	if err := s.chatWriteAccess(ctx, c, chatID); err != nil {
 		return err
 	}
 	var in struct {
-		Body string `json:"body"`
+		Body       string `json:"body"`
+		ReplyTo    string `json:"reply_to"`
+		ForwardOf  string `json:"forward_of"`
+		ForwardFam string `json:"forward_family_id"`
 	}
 	if err := readJSON(w, r, &in); err != nil {
 		return err
 	}
+	if in.ForwardOf != "" {
+		return s.forwardChatMessage(w, r, c, chatID, in.ForwardFam, in.ForwardOf)
+	}
 	body, err := required(in.Body, "Nachricht", 4000)
 	if err != nil {
 		return err
+	}
+	if in.ReplyTo != "" {
+		var found int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM chat_messages WHERE id = ? AND chat_id = ?`, in.ReplyTo, chatID).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fail(http.StatusBadRequest, "Diese Nachricht gibt es in diesem Chat nicht.")
+		}
+		if err != nil {
+			return err
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	id, err := addChatMessage(ctx, tx, c, chatID, body)
+	id, err := addChatMessage(ctx, tx, c, chatID, body, in.ReplyTo, false)
 	if err != nil {
 		return err
 	}
@@ -692,6 +807,138 @@ func (s *Server) postChatMessage(w http.ResponseWriter, r *http.Request, c reqCt
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 	return nil
+}
+
+// forwardChatMessage copies a message the user sees, from any of their circles, into
+// the chat: its words and its files, which get copies of their own in this circle.
+func (s *Server) forwardChatMessage(w http.ResponseWriter, r *http.Request, c reqCtx, chatID, fromFamily, messageID string) error {
+	ctx := r.Context()
+	if fromFamily == "" {
+		fromFamily = c.familyID
+	}
+	ok, err := s.isFamilyMember(ctx, fromFamily, c.userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errNotFound
+	}
+	var body, fromChat string
+	var deleted bool
+	err = s.db.QueryRowContext(ctx,
+		`SELECT m.body, m.chat_id, m.deleted_at IS NOT NULL FROM chat_messages m WHERE m.id = ? AND m.family_id = ?`,
+		messageID, fromFamily).Scan(&body, &fromChat, &deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errNotFound
+	}
+	if err != nil {
+		return err
+	}
+	from := c
+	from.familyID = fromFamily
+	if err := s.chatAccess(ctx, from, fromChat); err != nil {
+		return err
+	}
+	if deleted {
+		return fail(http.StatusBadRequest, "Eine gelöschte Nachricht lässt sich nicht weiterleiten.")
+	}
+	files, err := queryRows(ctx, s.db,
+		`SELECT id, name, mime, size, kind FROM files WHERE chat_message_id = ? ORDER BY created_at, id`, messageID)
+	if err != nil {
+		return err
+	}
+	// The copies go into the storage first; what is not kept goes out again.
+	type copied struct {
+		id, key string
+		file    map[string]any
+	}
+	var copies []copied
+	kept := false
+	defer func() {
+		if kept {
+			return
+		}
+		for _, f := range copies {
+			s.files.Delete(context.WithoutCancel(ctx), f.key)
+		}
+	}()
+	for _, f := range files {
+		content, _, err := s.files.Get(ctx, fileKey(fromFamily, f["id"].(string)))
+		if err != nil {
+			return err
+		}
+		id := newID()
+		key := fileKey(c.familyID, id)
+		_, err = s.files.Put(ctx, key, content, f["mime"].(string))
+		content.Close()
+		if err != nil {
+			return err
+		}
+		copies = append(copies, copied{id: id, key: key, file: f})
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	id, err := addChatMessage(ctx, tx, c, chatID, body, "", true)
+	if err != nil {
+		return err
+	}
+	for _, f := range copies {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO files (id, family_id, kind, name, mime, size, uploaded_by, created_at, chat_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			f.id, c.familyID, f.file["kind"], f.file["name"], f.file["mime"], f.file["size"], c.userID, now(), id); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	kept = true
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+	return nil
+}
+
+// reactToChatMessage is PUT .../chats/{id}/messages/{mid}/reaction: one emoji of the user
+// for the message, which replaces the one before; an empty one takes it back.
+func (s *Server) reactToChatMessage(w http.ResponseWriter, r *http.Request, c reqCtx) error {
+	ctx, chatID, id := r.Context(), r.PathValue("id"), r.PathValue("mid")
+	if err := s.chatWriteAccess(ctx, c, chatID); err != nil {
+		return err
+	}
+	var in struct {
+		Emoji string `json:"emoji"`
+	}
+	if err := readJSON(w, r, &in); err != nil {
+		return err
+	}
+	emoji := strings.TrimSpace(in.Emoji)
+	if len(emoji) > 64 || strings.IndexFunc(emoji, func(r rune) bool {
+		return r < 0x80 && r != '#' && r != '*' && !(r >= '0' && r <= '9')
+	}) >= 0 {
+		return fail(http.StatusBadRequest, "Ungültige Reaktion")
+	}
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM chat_messages WHERE id = ? AND chat_id = ? AND deleted_at IS NULL`, id, chatID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if emoji == "" {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM chat_reactions WHERE message_id = ? AND user_id = ?`, id, c.userID)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO chat_reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)
+			 ON CONFLICT (message_id, user_id) DO UPDATE SET emoji = excluded.emoji, created_at = excluded.created_at, pushed_at = NULL`,
+			id, c.userID, emoji, chatNow())
+	}
+	if err != nil {
+		return err
+	}
+	return noContent(w)
 }
 
 // uploadChatFile is POST .../chats/{id}/attachments: a picture or a document, as a
@@ -711,7 +958,7 @@ func (s *Server) uploadChatFile(w http.ResponseWriter, r *http.Request, c reqCtx
 		return err
 	}
 	defer tx.Rollback()
-	id, err := addChatMessage(ctx, tx, c, chatID, "")
+	id, err := addChatMessage(ctx, tx, c, chatID, "", "", false)
 	if err != nil {
 		return err
 	}
@@ -752,6 +999,9 @@ func (s *Server) deleteChatMessage(w http.ResponseWriter, r *http.Request, c req
 	defer tx.Rollback()
 	keys, err := chatFileKeys(ctx, tx, `m.id = ?`, id)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_reactions WHERE message_id = ?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE chat_message_id = ?`, id); err != nil {

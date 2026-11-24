@@ -239,6 +239,8 @@ func mergeManagedMember(ctx context.Context, tx *database.Tx, familyID, managed,
 		`UPDATE chat_reads SET user_id = ?1 WHERE user_id = ?2`,
 		`DELETE FROM chat_archived WHERE user_id = ?1 AND chat_id IN (SELECT chat_id FROM chat_archived WHERE user_id = ?2)`,
 		`UPDATE chat_archived SET user_id = ?1 WHERE user_id = ?2`,
+		`DELETE FROM chat_reactions WHERE user_id = ?1 AND message_id IN (SELECT message_id FROM chat_reactions WHERE user_id = ?2)`,
+		`UPDATE chat_reactions SET user_id = ?1 WHERE user_id = ?2`,
 		`UPDATE files SET uploaded_by = ?1 WHERE uploaded_by = ?2`,
 		// What they set up for themselves while logged in with a login code.
 		`DELETE FROM calendar_settings WHERE user_id = ?1 AND EXISTS (SELECT 1 FROM calendar_settings o WHERE o.user_id = ?2

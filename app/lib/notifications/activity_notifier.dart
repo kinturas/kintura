@@ -60,6 +60,9 @@ class ActivityNotifier {
   /// The newest message of each chat at the last look; null before the first look.
   Map<String, String>? _chatsSeen;
 
+  /// The newest reaction to one's own messages in each chat at the last look.
+  Map<String, String>? _reactionsSeen;
+
   /// What to ask the server at the next check, from what changed.
   bool _wantActivities = false;
   bool _wantChats = false;
@@ -105,6 +108,7 @@ class ActivityNotifier {
     // From now on, not what came before.
     _since = null;
     _chatsSeen = null;
+    _reactionsSeen = null;
     if (on) _schedule(Duration.zero);
     try {
       await (await SharedPreferences.getInstance()).setBool(_key, on);
@@ -122,6 +126,7 @@ class ActivityNotifier {
     _user = user;
     _since = null;
     _chatsSeen = null;
+    _reactionsSeen = null;
     // Signing out took the device off the server.
     _pushing = false;
     if (user.isEmpty) return;
@@ -259,10 +264,27 @@ class ActivityNotifier {
     }
     if (user != _user) return;
     final seen = _chatsSeen;
+    final reactionsSeen = _reactionsSeen;
     _chatsSeen = {
       for (final chat in chats) chat['id'] as String: (chat['last_message'] as Map?)?['created_at'] as String? ?? '',
     };
+    _reactionsSeen = {
+      for (final chat in chats) chat['id'] as String: (chat['reaction'] as Map?)?['created_at'] as String? ?? '',
+    };
     if (seen == null || _pushing || _inFront) return;
+    // Reactions of others to one's own messages.
+    for (final chat in chats) {
+      final reaction = chat['reaction'] as Map<String, dynamic>?;
+      if (reaction == null) continue;
+      final at = reaction['created_at'] as String? ?? '';
+      if (at.compareTo(reactionsSeen?[chat['id']] ?? '') <= 0) continue;
+      await notifications.show(
+        id: 'reaction-${chat['id']}'.hashCode & 0x7fffffff,
+        title: _titleOf(chat, chat['name'] as String? ?? 'Kintura'),
+        body: reaction['text'] as String? ?? '',
+        payload: OpenTarget.chat(chat['family_id'] as String, chat['id'] as String).payload,
+      );
+    }
     for (final chat in chats) {
       final last = chat['last_message'] as Map<String, dynamic>?;
       if (last == null || last['own'] == true || last['deleted'] == true) continue;

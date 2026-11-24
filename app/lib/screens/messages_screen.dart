@@ -53,7 +53,7 @@ String _chatsPath(AppSession session, String path, [Map<String, String> extra = 
 
 /// What a message says in a list or a notification: its words, or what it carries.
 String messagePreview(Map<String, dynamic> message) {
-  if (message['deleted'] == true) return 'Nachricht gelöscht';
+  if (message['deleted'] == true) return 'Nachricht wurde gelöscht';
   if (((message['photos'] as num?) ?? 0) > 0) return '📷 Bild';
   if (((message['documents'] as num?) ?? 0) > 0) return '📎 Dokument';
   final body = (message['body'] as String? ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();

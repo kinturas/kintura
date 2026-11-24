@@ -541,19 +541,39 @@ class FakeBackend {
           case ('GET', 'messages'):
             response = {'messages': chatMessages[id] ?? [], 'more': false};
           case ('POST', 'messages'):
+            final sent = body as Map;
+            final replyTo = (chatMessages[id] ?? []).where((m) => m['id'] == sent['reply_to']).firstOrNull;
             (chatMessages[id] ??= []).add({
               'id': 'm${(chatMessages[id]?.length ?? 0) + 1}',
               'sender_id': 'u1',
               'sender_name': 'Anna',
               'sender_color': '',
-              'body': (body as Map)['body'],
+              'body': sent['body'] ?? 'Weitergeleitet',
               'created_at': DateTime.now().toUtc().toIso8601String(),
               'deleted': false,
+              'forwarded': sent['forward_of'] != null,
               'own': true,
               'can_delete': true,
               'attachments': [],
+              'reactions': [],
+              'reply': replyTo == null
+                  ? null
+                  : {'id': replyTo['id'], 'sender_name': replyTo['sender_name'], 'body': replyTo['body'], 'deleted': false},
             });
             response = {'id': 'm-new'};
+          case ('PUT', final reaction) when reaction.endsWith('/reaction'):
+            final messageId = reaction.split('/')[1];
+            final emoji = (body as Map)['emoji'] as String;
+            for (final m in chatMessages[id] ?? <Map<String, Object?>>[]) {
+              if (m['id'] == messageId) {
+                m['reactions'] = emoji.isEmpty
+                    ? []
+                    : [
+                        {'emoji': emoji, 'count': 1, 'mine': true, 'names': ['Anna']},
+                      ];
+              }
+            }
+            response = null;
           case ('POST', 'attachments'):
             uploads.add(path);
             response = {'id': 'm-file', 'file_id': 'f-file'};

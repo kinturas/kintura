@@ -339,6 +339,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /api/families/{fid}/chats/{id}/messages", s.member(s.listChatMessages))
 	mux.Handle("POST /api/families/{fid}/chats/{id}/messages", s.member(s.postChatMessage))
 	mux.Handle("DELETE /api/families/{fid}/chats/{id}/messages/{mid}", s.member(s.deleteChatMessage))
+	mux.Handle("PUT /api/families/{fid}/chats/{id}/messages/{mid}/reaction", s.member(s.reactToChatMessage))
 	mux.Handle("POST /api/families/{fid}/chats/{id}/attachments", s.member(s.uploadChatFile))
 	mux.Handle("GET /api/families/{fid}/chats/{id}/attachments/{fileId}", s.member(s.chatFileContent))
 	mux.Handle("POST /api/families/{fid}/chats/{id}/attachments/{fileId}/link", s.member(s.chatFileLink))
