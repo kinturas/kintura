@@ -498,6 +498,77 @@ class FakeBackend {
       case '/api/families/f1/events/e1/attachments/a1':
         writes['${request.method} ${request.url.path}'] = body;
         response = <String, dynamic>{};
+      case '/api/chats':
+        response = chats;
+      case '/api/chats/unread':
+        final count = chats
+            .where((c) => c['archived'] != true)
+            .fold<int>(0, (sum, c) => sum + ((c['unread'] as num?) ?? 0).toInt());
+        response = {
+          'count': count,
+          'families': {'f1': count},
+        };
+      case '/api/chats/search':
+        response = chatSearch;
+      case '/api/families/f1/chats':
+        writes['${request.method} ${request.url.path}'] = body;
+        final id = (body as Map)['kind'] == 'direct' ? 'c-${body['user_id']}' : 'c-new';
+        if (!chats.any((c) => c['id'] == id)) {
+          chats.insert(0, {
+            'id': id,
+            'family_id': 'f1',
+            'kind': body['kind'],
+            'name': body['kind'] == 'direct' ? 'Ben' : body['name'],
+            'color': '',
+            'assignees_all': body['assignees_all'] ?? false,
+            'assignee_ids': body['assignee_ids'] ?? [],
+            'visibility': body['visibility'] ?? 'participants',
+            'archived': false,
+            'unread': 0,
+            'can_write': true,
+            'can_edit': body['kind'] == 'group',
+            'last_message': null,
+          });
+        }
+        response = {'id': id};
+      case final path when path.startsWith('/api/families/f1/chats/'):
+        final parts = path.substring('/api/families/f1/chats/'.length).split('/');
+        final id = parts.first;
+        final chat = chats.where((c) => c['id'] == id).firstOrNull;
+        final rest = parts.skip(1).join('/');
+        if (request.method != 'GET') writes['${request.method} $rest'] = body;
+        switch ((request.method, rest)) {
+          case ('GET', 'messages'):
+            response = {'messages': chatMessages[id] ?? [], 'more': false};
+          case ('POST', 'messages'):
+            (chatMessages[id] ??= []).add({
+              'id': 'm${(chatMessages[id]?.length ?? 0) + 1}',
+              'sender_id': 'u1',
+              'sender_name': 'Anna',
+              'sender_color': '',
+              'body': (body as Map)['body'],
+              'created_at': DateTime.now().toUtc().toIso8601String(),
+              'deleted': false,
+              'own': true,
+              'can_delete': true,
+              'attachments': [],
+            });
+            response = {'id': 'm-new'};
+          case ('POST', 'attachments'):
+            uploads.add(path);
+            response = {'id': 'm-file', 'file_id': 'f-file'};
+          case ('POST', 'read'):
+            chat?['unread'] = 0;
+            response = null;
+          case ('PUT', 'archive'):
+            chat?['archived'] = (body as Map)['archived'];
+            response = null;
+          case ('DELETE', ''):
+            chats.removeWhere((c) => c['id'] == id);
+            response = null;
+          default:
+            response = <String, dynamic>{};
+        }
       case '/api/families/f1/shopping/lists' when request.method == 'GET':
         response = shoppingLists;
       case '/api/families/f1/shopping/lists/s1/items' when request.method == 'GET':
@@ -603,6 +674,11 @@ class FakeBackend {
     {'id': 'i2', 'name': 'Brot', 'amount': '', 'note': '', 'urgency': '', 'done': true, 'photo_ids': <String>[]},
   ];
   List<Map<String, Object?>> shoppingArticles = [];
+
+  /// Nachrichten: the chats as GET /api/chats has them, and the messages of each.
+  List<Map<String, Object?>> chats = [];
+  Map<String, List<Map<String, Object?>>> chatMessages = {};
+  List<Map<String, Object?>> chatSearch = [];
 
   /// The list opened last, as GET shopping/last tells it; empty for none.
   String shoppingLast = '';
@@ -1069,8 +1145,8 @@ void main() {
 
     testWidgets('zeigen „Kommt bald“ und öffnen sich nicht', (tester) async {
       await pumpApp(tester, FakeBackend(), MemoryTokens()..token = 't1');
-      expect(find.text('Kommt bald'), findsNWidgets(6));
-      for (final title in ['Listen', 'Dokumente', 'Mahlzeiten', 'Nachrichten', 'Fotos', 'Besondere Tage']) {
+      expect(find.text('Kommt bald'), findsNWidgets(5));
+      for (final title in ['Listen', 'Dokumente', 'Mahlzeiten', 'Fotos', 'Besondere Tage']) {
         expect(find.descendant(of: tile(title), matching: find.text('Kommt bald')), findsOneWidget, reason: title);
         await tester.tap(find.text(title));
         await tester.pumpAndSettle();

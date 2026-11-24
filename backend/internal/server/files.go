@@ -25,7 +25,7 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request, c reqCtx) err
 		`SELECT f.id, f.kind, f.name, f.mime, f.size, f.created_at, COALESCE(m.name, u.name) AS uploaded_by_name
 		 FROM files f JOIN users u ON u.id = f.uploaded_by
 		 LEFT JOIN memberships m ON m.user_id = f.uploaded_by AND m.family_id = f.family_id
-		 WHERE f.family_id = ? AND f.kind = ? AND f.event_id IS NULL ORDER BY f.created_at DESC`, c.familyID, r.URL.Query().Get("kind"))
+		 WHERE f.family_id = ? AND f.kind = ? AND f.event_id IS NULL AND f.chat_message_id IS NULL ORDER BY f.created_at DESC`, c.familyID, r.URL.Query().Get("kind"))
 	if err != nil {
 		return err
 	}
@@ -44,38 +44,70 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request, c reqCtx) er
 // storeUpload saves the uploaded file. With an eventID it becomes an attachment,
 // which only the routes of that event reach, because the event may be private.
 func (s *Server) storeUpload(w http.ResponseWriter, r *http.Request, c reqCtx, kind, eventID string) error {
+	up, err := s.receiveUpload(w, r, c, kind)
+	if err != nil {
+		return err
+	}
+	defer up.discard()
+	if _, err := s.db.ExecContext(r.Context(),
+		`INSERT INTO files (id, family_id, kind, name, mime, size, uploaded_by, created_at, event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		up.id, c.familyID, up.kind, up.name, up.mime, up.size, c.userID, now(), nullable(eventID)); err != nil {
+		return err
+	}
+	up.keep()
+	writeJSON(w, http.StatusCreated, map[string]string{"id": up.id})
+	return nil
+}
+
+// upload is a file already in the storage, whose row in files is still to be made.
+// Unless kept, discard takes it out of the storage again.
+type upload struct {
+	id, name, mime, kind string
+	size                 int64
+	discard, keep        func()
+}
+
+// receiveUpload puts the one file of a multipart request into the storage. kind is
+// photo or document, or empty to tell by the content: photo for an image.
+func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request, c reqCtx, kind string) (upload, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return fail(http.StatusBadRequest, "Ungültiger Upload")
+		return upload{}, fail(http.StatusBadRequest, "Ungültiger Upload")
 	}
 	part, err := mr.NextPart()
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return err
+			return upload{}, err
 		}
-		return fail(http.StatusBadRequest, "Ungültiger Upload")
+		return upload{}, fail(http.StatusBadRequest, "Ungültiger Upload")
 	}
 	defer part.Close()
 	name, err := required(filepath.Base(part.FileName()), "Dateiname", 255)
 	if err != nil {
-		return err
+		return upload{}, err
 	}
 
 	// The type is detected from the content, never taken from the client.
 	head := make([]byte, 512)
 	n, err := io.ReadFull(part, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return err
+		return upload{}, err
 	}
 	head = head[:n]
 	if n == 0 {
-		return fail(http.StatusBadRequest, "Die Datei ist leer.")
+		return upload{}, fail(http.StatusBadRequest, "Die Datei ist leer.")
 	}
 	contentType := http.DetectContentType(head)
+	if kind == "" {
+		kind = "document"
+		if photoTypes[contentType] {
+			kind = "photo"
+		}
+	}
 	if kind == "photo" && !photoTypes[contentType] {
-		return fail(http.StatusBadRequest, "Nur JPEG, PNG, GIF und WebP werden unterstützt.")
+		return upload{}, fail(http.StatusBadRequest, "Nur JPEG, PNG, GIF und WebP werden unterstützt.")
 	}
 
 	id := newID()
@@ -83,22 +115,18 @@ func (s *Server) storeUpload(w http.ResponseWriter, r *http.Request, c reqCtx, k
 	key := fileKey(c.familyID, id)
 	size, err := s.files.Put(ctx, key, io.MultiReader(bytes.NewReader(head), part), contentType)
 	if err != nil {
-		return err
+		return upload{}, err
 	}
-	stored := false
-	defer func() {
-		if !stored {
-			s.files.Delete(context.WithoutCancel(ctx), key)
-		}
-	}()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO files (id, family_id, kind, name, mime, size, uploaded_by, created_at, event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, c.familyID, kind, name, contentType, size, c.userID, now(), nullable(eventID)); err != nil {
-		return err
-	}
-	stored = true
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
-	return nil
+	kept := false
+	return upload{
+		id: id, name: name, mime: contentType, kind: kind, size: size,
+		discard: func() {
+			if !kept {
+				s.files.Delete(context.WithoutCancel(ctx), key)
+			}
+		},
+		keep: func() { kept = true },
+	}, nil
 }
 
 // serveFile sends a stored file. nosniff keeps browsers from executing uploads.
@@ -119,7 +147,7 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, key, name, co
 func (s *Server) fileContent(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	id := r.PathValue("id")
 	var name, contentType string
-	err := s.db.QueryRowContext(r.Context(), `SELECT name, mime FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL`, id, c.familyID).
+	err := s.db.QueryRowContext(r.Context(), `SELECT name, mime FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL AND chat_message_id IS NULL`, id, c.familyID).
 		Scan(&name, &contentType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errNotFound
@@ -136,7 +164,7 @@ func (s *Server) fileLink(w http.ResponseWriter, r *http.Request, c reqCtx) erro
 	ctx := r.Context()
 	id := r.PathValue("id")
 	var exists string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL`, id, c.familyID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL AND chat_message_id IS NULL`, id, c.familyID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errNotFound
 	}
@@ -173,7 +201,7 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request, c reqCtx) error {
 	id := r.PathValue("id")
 	var exists string
-	err := s.db.QueryRowContext(r.Context(), `SELECT id FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL`, id, c.familyID).Scan(&exists)
+	err := s.db.QueryRowContext(r.Context(), `SELECT id FROM files WHERE id = ? AND family_id = ? AND event_id IS NULL AND chat_message_id IS NULL`, id, c.familyID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errNotFound
 	}

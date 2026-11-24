@@ -327,8 +327,21 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /api/families/{fid}/meals", s.member(s.listMeals))
 	mux.Handle("PUT /api/families/{fid}/meals/{date}/{slot}", s.member(s.putMeal))
 
-	mux.Handle("GET /api/families/{fid}/messages", s.member(s.listMessages))
-	mux.Handle("POST /api/families/{fid}/messages", s.member(s.createMessage))
+	// Nachrichten, see chats.go: the list and the search over all circles of the user.
+	mux.Handle("GET /api/chats", s.authed(s.listChats))
+	mux.Handle("GET /api/chats/unread", s.authed(s.unreadChats))
+	mux.Handle("GET /api/chats/search", s.authed(s.searchChats))
+	mux.Handle("POST /api/families/{fid}/chats", s.member(s.createChat))
+	mux.Handle("PUT /api/families/{fid}/chats/{id}", s.member(s.updateChat))
+	mux.Handle("DELETE /api/families/{fid}/chats/{id}", s.member(s.deleteChat))
+	mux.Handle("PUT /api/families/{fid}/chats/{id}/archive", s.member(s.archiveChat))
+	mux.Handle("POST /api/families/{fid}/chats/{id}/read", s.member(s.markChatRead))
+	mux.Handle("GET /api/families/{fid}/chats/{id}/messages", s.member(s.listChatMessages))
+	mux.Handle("POST /api/families/{fid}/chats/{id}/messages", s.member(s.postChatMessage))
+	mux.Handle("DELETE /api/families/{fid}/chats/{id}/messages/{mid}", s.member(s.deleteChatMessage))
+	mux.Handle("POST /api/families/{fid}/chats/{id}/attachments", s.member(s.uploadChatFile))
+	mux.Handle("GET /api/families/{fid}/chats/{id}/attachments/{fileId}", s.member(s.chatFileContent))
+	mux.Handle("POST /api/families/{fid}/chats/{id}/attachments/{fileId}/link", s.member(s.chatFileLink))
 
 	mux.Handle("GET /api/families/{fid}/special-days", s.member(s.listSpecialDays))
 	mux.Handle("POST /api/families/{fid}/special-days", s.member(s.createSpecialDay))

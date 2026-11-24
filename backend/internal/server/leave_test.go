@@ -159,7 +159,19 @@ func TestLeavingWithAllDataRemovesWhatIsOwn(t *testing.T) {
 		"participants_all": false, "participant_ids": []any{memberID},
 	}))["id"].(string)
 	e.expect(201, "POST", base+"/events/"+shared+"/comments", member, obj{"body": "Mein Kommentar"})
-	e.expect(201, "POST", base+"/messages", member, obj{"body": "Meine Nachricht"})
+	var directFile string
+	group := e.expect(201, "POST", base+"/chats", admin, obj{"kind": "group", "name": "Alle", "assignees_all": true})["id"].(string)
+	e.expect(201, "POST", base+"/chats/"+group+"/messages", member, obj{"body": "Meine Nachricht"})
+	e.expect(201, "POST", base+"/chats/"+group+"/messages", admin, obj{"body": "Antwort"})
+	// Made by the member, for nobody else: nobody could see it any more.
+	lonely := e.expect(201, "POST", base+"/chats", member, obj{"kind": "group", "name": "Nur ich", "assignee_ids": []any{memberID}})["id"].(string)
+	direct := e.expect(201, "POST", base+"/chats", admin, obj{"kind": "direct", "user_id": memberID})["id"].(string)
+	e.expect(201, "POST", base+"/chats/"+direct+"/messages", admin, obj{"body": "Unter uns"})
+	if status, out := e.uploadTo(admin, base+"/chats/"+direct+"/attachments", "bild.png", pngHeader); status != 201 {
+		t.Fatalf("chat file: %d %v", status, out)
+	} else {
+		directFile = out["file_id"].(string)
+	}
 	status, out := e.uploadTo(member, base+"/events/"+shared+"/attachments", "plan.png", pngHeader)
 	if status != 201 {
 		t.Fatalf("upload: %d %v", status, out)
@@ -188,8 +200,19 @@ func TestLeavingWithAllDataRemovesWhatIsOwn(t *testing.T) {
 	if got := e.expect(200, "GET", base+"/events/"+openForMember, admin, nil); got["participants_all"] != true {
 		t.Errorf("open event for the member: %v", got)
 	}
+	if e.fileStored(directFile) {
+		t.Errorf("file of the direct messages still on disk")
+	}
+	e.expect(404, "GET", base+"/chats/"+direct+"/messages", admin, nil)
+	var chats int
+	if err := e.server.db.QueryRow(`SELECT COUNT(*) FROM chats WHERE id IN (?, ?)`, direct, lonely).Scan(&chats); err != nil || chats != 0 {
+		t.Errorf("chats of the member: %d %v", chats, err)
+	}
+	if got := e.expect(200, "GET", base+"/chats/"+group+"/messages", admin, nil)["messages"].([]any); len(got) != 1 {
+		t.Errorf("group: %v", got)
+	}
 	var messages int
-	if err := e.server.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE sender_id = ?`, memberID).Scan(&messages); err != nil || messages != 0 {
+	if err := e.server.db.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE sender_id = ?`, memberID).Scan(&messages); err != nil || messages != 0 {
 		t.Errorf("messages: %d %v", messages, err)
 	}
 

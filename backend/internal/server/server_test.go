@@ -1149,7 +1149,7 @@ func TestTenantIsolation(t *testing.T) {
 
 	// Bob addressing Alice's family directly.
 	for _, r := range [][2]string{
-		{"GET", base + "/lists"}, {"GET", base + "/members"}, {"GET", base + "/messages"},
+		{"GET", base + "/lists"}, {"GET", base + "/members"}, {"GET", base + "/chats/x/messages"},
 		{"GET", base + "/lists/" + listID + "/items"}, {"GET", base + "/files?kind=photo"},
 		{"GET", base + "/files/" + fileID + "/content"}, {"POST", base + "/files/" + fileID + "/link"},
 		{"DELETE", base + "/lists/" + listID}, {"POST", base + "/select"},

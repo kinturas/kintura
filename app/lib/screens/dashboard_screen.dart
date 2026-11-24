@@ -16,7 +16,16 @@ import 'shopping_screen.dart';
 import 'special_days_screen.dart';
 
 class _Area {
-  const _Area(this.title, this.subtitle, this.icon, this.color, this.page, {this.comingSoon = false, this.showsUnread = false});
+  const _Area(
+    this.title,
+    this.subtitle,
+    this.icon,
+    this.color,
+    this.page, {
+    this.comingSoon = false,
+    this.showsUnread = false,
+    this.showsUnreadMessages = false,
+  });
 
   final String title;
   final String subtitle;
@@ -30,6 +39,9 @@ class _Area {
 
   /// Shows the number of unread entries of Aktuelles.
   final bool showsUnread;
+
+  /// Shows the number of unread messages.
+  final bool showsUnreadMessages;
 }
 
 /// The areas in their order. The administration is the admins' alone and comes last.
@@ -42,12 +54,19 @@ List<_Area> _areasFor(FamilyType type, {required bool isAdmin}) => [
     ActivityScreen(),
     showsUnread: true,
   ),
+  _Area(
+    'Nachrichten',
+    type.chat,
+    Icons.chat_bubble_outline,
+    const Color(0xFF7B4FB0),
+    const MessagesScreen(),
+    showsUnreadMessages: true,
+  ),
   const _Area('Kalender', 'Termine', Icons.calendar_month, Color(0xFF3567B5), CalendarScreen()),
   const _Area('Einkaufen', 'Einkaufslisten', Icons.shopping_cart_outlined, Color(0xFF5E8C2B), ShoppingScreen()),
   const _Area('Listen', 'Aufgaben', Icons.checklist, Color(0xFF2E7D5B), ListsScreen(), comingSoon: true),
   const _Area('Dokumente', 'Wichtige Unterlagen', Icons.folder_outlined, Color(0xFF8A6D1F), DocumentsScreen(), comingSoon: true),
   const _Area('Mahlzeiten', 'Essensplaner', Icons.restaurant_menu, Color(0xFFC2571A), MealsScreen(), comingSoon: true),
-  _Area('Nachrichten', type.chat, Icons.chat_bubble_outline, const Color(0xFF7B4FB0), const MessagesScreen(), comingSoon: true),
   const _Area('Fotos', 'Gemeinsame Bilder', Icons.photo_library_outlined, Color(0xFFB83E6F), PhotosScreen(), comingSoon: true),
   const _Area('Besondere Tage', 'Festtage & Gedenktage', Icons.celebration_outlined, Color(0xFF1E8A99), SpecialDaysScreen(), comingSoon: true),
   // Named after the kind of family, for everyone in it.
@@ -273,6 +292,10 @@ class _AreaTile extends StatelessWidget {
                   if (area.showsUnread) ...[
                     const Spacer(),
                     UnreadActivities(background: colors.onPrimaryContainer, foreground: colors.primaryContainer),
+                  ],
+                  if (area.showsUnreadMessages) ...[
+                    const Spacer(),
+                    UnreadMessages(background: colors.onPrimaryContainer, foreground: colors.primaryContainer),
                   ],
                   if (area.comingSoon) ...[
                     const Spacer(),

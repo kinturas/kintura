@@ -412,16 +412,26 @@ func fileIDs(ctx context.Context, q dbtx, query string, args ...any) ([]string, 
 func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID string) ([]string, error) {
 	const ownEvents = `SELECT e.id FROM events e WHERE e.family_id = ?1 AND e.created_by = ?2 AND e.visibility = 'participants' AND e.participants_all = 0
 		AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = e.id AND p.user_id <> ?2)`
+	// Direct messages with the member go with them, also what the other one wrote.
+	const ownChats = `SELECT ch.id FROM chats ch WHERE ch.family_id = ?1 AND ch.kind = 'direct'
+		AND EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = ch.id AND cm.user_id = ?2)`
 	files, err := fileIDs(ctx, tx,
-		`SELECT id, family_id FROM files WHERE family_id = ?1 AND (uploaded_by = ?2 OR event_id IN (`+ownEvents+`))`, familyID, userID)
+		`SELECT id, family_id FROM files WHERE family_id = ?1 AND (uploaded_by = ?2 OR event_id IN (`+ownEvents+`)
+			OR chat_message_id IN (SELECT id FROM chat_messages WHERE chat_id IN (`+ownChats+`)))`, familyID, userID)
 	if err != nil {
 		return nil, err
 	}
 	const inFamily = `event_id IN (SELECT id FROM events WHERE family_id = ?1)`
+	const inChats = `chat_id IN (SELECT id FROM chats WHERE family_id = ?1)`
 	for _, query := range []string{
 		`DELETE FROM events WHERE id IN (` + ownEvents + `)`,
 		`DELETE FROM files WHERE family_id = ?1 AND uploaded_by = ?2`,
-		`DELETE FROM messages WHERE family_id = ?1 AND sender_id = ?2`,
+		`DELETE FROM chats WHERE id IN (` + ownChats + `)`,
+		`DELETE FROM chat_messages WHERE family_id = ?1 AND sender_id = ?2`,
+		`DELETE FROM chat_members WHERE user_id = ?2 AND ` + inChats,
+		`DELETE FROM chat_reads WHERE user_id = ?2 AND ` + inChats,
+		`DELETE FROM chat_archived WHERE user_id = ?2 AND ` + inChats,
+		`UPDATE chats SET created_by = NULL WHERE family_id = ?1 AND created_by = ?2`,
 		`DELETE FROM event_comments WHERE user_id = ?2 AND ` + inFamily,
 		`DELETE FROM shopping_list_comments WHERE user_id = ?2 AND list_id IN (SELECT id FROM shopping_lists WHERE family_id = ?1)`,
 		`DELETE FROM event_participants WHERE user_id = ?2 AND ` + inFamily,
@@ -452,6 +462,18 @@ func deleteMemberData(ctx context.Context, tx *database.Tx, familyID, userID str
 		return nil, err
 	}
 	files = append(files, orphans...)
+	// A group for nobody any more, which only its people could see, goes the same way.
+	const abandonedChats = `SELECT ch.id FROM chats ch WHERE ch.family_id = ?1 AND ch.kind = 'group' AND ch.assignees_all = 0
+		AND ch.visibility = 'participants' AND ch.created_by IS NULL
+		AND NOT EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = ch.id)`
+	chatOrphans, err := chatFileKeys(ctx, tx, `m.chat_id IN (`+abandonedChats+`)`, familyID)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, chatOrphans...)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chats WHERE id IN (`+abandonedChats+`)`, familyID); err != nil {
+		return nil, err
+	}
 	if err := deleteMemberShopping(ctx, tx, familyID, userID); err != nil {
 		return nil, err
 	}

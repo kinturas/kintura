@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api.dart';
 import '../live_updates.dart';
 import '../screens/activity_screen.dart';
+import '../screens/messages_screen.dart' show messagePreview;
 import '../session.dart';
 import 'push.dart';
 import 'system_notifications.dart';
@@ -13,7 +14,7 @@ import 'system_notifications.dart';
 /// The one of the running app; none in tests.
 ActivityNotifier? activityNotifier;
 
-/// Tells of what is new in Aktuelles, from all circles, with a notification of the
+/// Tells of what is new in Aktuelles and of new messages, from all circles, with a notification of the
 /// system, while the app runs but is not in front. It hears of changes through the
 /// live connection, asks the server what came, and shows what others did since it
 /// last looked. Turned on and off for each device, see [setEnabled].
@@ -38,11 +39,11 @@ class ActivityNotifier {
   bool get pushing => _pushing;
   bool _pushing = false;
 
-  /// A tapped push message opened the app before anyone was signed in.
-  bool _openWhenSignedIn = false;
+  /// Where a tapped push message leads that opened the app before anyone was signed in.
+  OpenTarget? _openWhenSignedIn;
 
-  /// Opens Aktuelles, when a notification is tapped.
-  final VoidCallback? onOpen;
+  /// Opens Aktuelles or a chat, when a notification is tapped.
+  final void Function(OpenTarget target)? onOpen;
 
   /// Whether this device shows them. Off until the user turns them on, since most
   /// systems ask first.
@@ -55,6 +56,13 @@ class ActivityNotifier {
 
   /// Entries newer than this were not told yet; null before the first look.
   String? _since;
+
+  /// The newest message of each chat at the last look; null before the first look.
+  Map<String, String>? _chatsSeen;
+
+  /// What to ask the server at the next check, from what changed.
+  bool _wantActivities = false;
+  bool _wantChats = false;
   String _user = '';
   StreamSubscription<LiveEvent>? _events;
   Timer? _timer;
@@ -62,11 +70,11 @@ class ActivityNotifier {
   bool _again = false;
 
   Future<void> start() async {
-    await notifications.init((_) => onOpen?.call());
+    await notifications.init((payload) => onOpen?.call(OpenTarget.fromPayload(payload)));
     final push = this.push;
     if (push != null && await push.available()) {
       _canPush = true;
-      push.onOpened = () => onOpen?.call();
+      push.onOpened = (target) => onOpen?.call(target);
       _openWhenSignedIn = await push.openedFrom();
     }
     try {
@@ -96,6 +104,7 @@ class ActivityNotifier {
     enabled.value = on;
     // From now on, not what came before.
     _since = null;
+    _chatsSeen = null;
     if (on) _schedule(Duration.zero);
     try {
       await (await SharedPreferences.getInstance()).setBool(_key, on);
@@ -112,15 +121,17 @@ class ActivityNotifier {
     // Someone else, or no one: start over, without telling what was before.
     _user = user;
     _since = null;
+    _chatsSeen = null;
     // Signing out took the device off the server.
     _pushing = false;
     if (user.isEmpty) return;
     _schedule(Duration.zero);
     // At every start, since the key of the device can change.
     unawaited(_syncPush());
-    if (_openWhenSignedIn) {
-      _openWhenSignedIn = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) => onOpen?.call());
+    final target = _openWhenSignedIn;
+    if (target != null) {
+      _openWhenSignedIn = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => onOpen?.call(target));
     }
   }
 
@@ -153,12 +164,22 @@ class ActivityNotifier {
   }
 
   void _heard(LiveEvent event) {
-    if (event.isResync || const {'shopping', 'calendar', 'family'}.contains(event.topic)) _schedule(settle);
+    if (event.isResync || event.topic == 'messages') {
+      _wantChats = true;
+    }
+    if (event.isResync || const {'shopping', 'calendar', 'family'}.contains(event.topic)) {
+      _wantActivities = true;
+    }
+    if (_wantChats || _wantActivities) _schedule(settle);
   }
 
   void _schedule(Duration after) {
     // While the server sends, nothing to ask for here.
     if (!enabled.value || _user.isEmpty || _pushing) return;
+    if (after == Duration.zero) {
+      _wantActivities = true;
+      _wantChats = true;
+    }
     _timer?.cancel();
     _timer = Timer(after, _check);
   }
@@ -174,7 +195,14 @@ class ActivityNotifier {
     try {
       do {
         _again = false;
-        await _checkOnce();
+        if (_wantActivities) {
+          _wantActivities = false;
+          await _checkOnce();
+        }
+        if (_wantChats) {
+          _wantChats = false;
+          await _checkChatsOnce();
+        }
       } while (_again);
     } finally {
       _checking = false;
@@ -218,10 +246,45 @@ class ActivityNotifier {
     }
   }
 
-  /// The circle, if there is more than one, so one knows where it happened.
-  String _titleOf(Map<String, dynamic> item) {
-    if (session.families.length < 2) return 'Kintura';
+  /// Tells of the newest message of each chat that came from someone else since the
+  /// last look and is unread; one notification for each chat, replaced by the next.
+  Future<void> _checkChatsOnce() async {
+    if (!enabled.value || _user.isEmpty) return;
+    final user = _user;
+    final List<Map<String, dynamic>> chats;
+    try {
+      chats = (await session.api.get('/api/chats') as List).cast<Map<String, dynamic>>();
+    } on ApiException {
+      return;
+    }
+    if (user != _user) return;
+    final seen = _chatsSeen;
+    _chatsSeen = {
+      for (final chat in chats) chat['id'] as String: (chat['last_message'] as Map?)?['created_at'] as String? ?? '',
+    };
+    if (seen == null || _pushing || _inFront) return;
+    for (final chat in chats) {
+      final last = chat['last_message'] as Map<String, dynamic>?;
+      if (last == null || last['own'] == true || last['deleted'] == true) continue;
+      if (((chat['unread'] as num?) ?? 0) == 0) continue;
+      final at = last['created_at'] as String? ?? '';
+      if (at.compareTo(seen[chat['id']] ?? '') <= 0) continue;
+      final group = chat['kind'] == 'group';
+      final text = messagePreview(last);
+      final sender = last['sender_name'] as String? ?? '';
+      await notifications.show(
+        id: 'chat-${chat['id']}'.hashCode & 0x7fffffff,
+        title: _titleOf(chat, chat['name'] as String? ?? 'Kintura'),
+        body: group && sender.isNotEmpty ? '$sender: $text' : text,
+        payload: OpenTarget.chat(chat['family_id'] as String, chat['id'] as String).payload,
+      );
+    }
+  }
+
+  /// [title] with the circle, if there is more than one, so one knows where it happened.
+  String _titleOf(Map<String, dynamic> item, [String title = 'Kintura']) {
+    if (session.families.length < 2) return title;
     final family = session.families.where((f) => f.id == item['family_id']).firstOrNull;
-    return family == null ? 'Kintura' : 'Kintura · ${family.name}';
+    return family == null ? title : '$title · ${family.name}';
   }
 }

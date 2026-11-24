@@ -275,7 +275,7 @@ Den Kreis verlässt man über „Profil bearbeiten“, ganz unten. Konten werden
   Profil, Termine und alles andere wieder da; Rolle und Admin-Flag bestimmt die Einladung.
   Admins sehen solche Personen weiter in der Mitgliederliste, als „Gelöscht“ markiert, und können sie von dort wieder einladen
   oder endgültig löschen. Letzteres entfernt dasselbe wie die nächste Option; das Konto bleibt für andere Kreise bestehen.
-- **Verlassen und alle Daten löschen** löscht endgültig Profil, Nachrichten, Kommentare, hochgeladene Dateien, die eigenen
+- **Verlassen und alle Daten löschen** löscht endgültig Profil, Nachrichten und Direktnachrichten, Kommentare, hochgeladene Dateien, die eigenen
   Kalender-Einstellungen und Termine, die nur die Person selbst sah. Gemeinsame Termine und Listen bleiben für die anderen, ohne
   Namen. Private Termine anderer werden dadurch nie öffentlich.
 - **Letzter Admin mit weiteren Mitgliedern:** kann nicht verlassen und muss zuerst jemand anderen zum Admin machen. Auch wer den
@@ -473,10 +473,36 @@ Die erste Kachel zeigt, was ansteht und was passiert ist, mit der Zahl der ungel
   stündliche Aufräumlauf alte Einträge weg.
 
 
+## Nachrichten
+
+Die Kachel steht gleich nach Aktuelles und zählt die ungelesenen Nachrichten. Es gibt zwei Arten von Chats, beide gehören
+zu einem Kreis ([chats.go](backend/internal/server/chats.go), [messages_screen.dart](app/lib/screens/messages_screen.dart)):
+
+- **Direktnachrichten** zwischen zwei Mitgliedern. Für zwei gibt es nur einen; wer ihn noch einmal anlegt, landet im
+  bestehenden. Sie haben keine Einstellungen und lassen sich nicht löschen, nur archivieren.
+- **Gruppen** wie Einkaufslisten: Titel, Farbe, Kategorie des Kalenders, „Betrifft“ (Alle oder einzelne Personen, wer sie
+  anlegt, gehört immer dazu) und „Sichtbar für“: nur die Betroffenen oder „Jeden (lesend)“, dann lesen alle im Kreis mit,
+  schreiben aber nicht. Ändern und löschen dürfen sie wer sie angelegt hat, Manager und Admins.
+
+Die Liste zeigt den Chat mit der neuesten Nachricht zuerst. Oben rechts der Filter „Nur <Kreis>“ (Standard) oder „Alle Kreise“,
+dann tragen die Chats ihren Kreis als Label; mit nur einem Kreis gibt es den Filter nicht. Darunter die Suche über alle Nachrichten
+und Dateinamen der gezeigten Kreise (`GET /api/chats/search`, ab zwei Zeichen), die Filter Alle, Ungelesen und Gruppen und
+„Archiviert“. Archivieren gilt nur für einen selbst; eine neue Nachricht holt den Chat für die Betroffenen zurück.
+
+In einem Chat gehen Emojis (`emoji_picker_flutter`), Bilder (verkleinert auf 1600 Pixel) und Dokumente bis 25 MB, jede Datei als
+eigene Nachricht. Anhänge liegen in `files` mit `chat_message_id` und erscheinen nicht unter Dokumente. Eigene Nachrichten lassen
+sich löschen; an ihrer Stelle steht dann „Nachricht gelöscht“. Gelesen gilt ein Chat, sobald man ihn öffnet.
+
+Nachrichten sind keine Einträge von Aktuelles. Sie kommen als Benachrichtigung, siehe unten. Wer einen Kreis mit „alle Daten löschen“
+verlässt, nimmt seine Direktnachrichten mit, auch die Antworten darin; seine Nachrichten in Gruppen werden gelöscht, und eine Gruppe,
+die danach niemanden mehr betrifft und nur für die Betroffenen sichtbar war, ebenso.
+
 ## Benachrichtigungen
 
-Neues aus „Was ist passiert“ kann als Benachrichtigung kommen, aus allen Kreisen. Eingeschaltet wird das je Gerät im
-Profil („Benachrichtigungen auf diesem Gerät“); dabei fragt das System oder der Browser um Erlaubnis.
+Neues aus „Was ist passiert“ und neue Nachrichten können als Benachrichtigung kommen, aus allen Kreisen. Eingeschaltet wird das
+je Gerät im Profil („Benachrichtigungen auf diesem Gerät“); dabei fragt das System oder der Browser um Erlaubnis. Eine Nachricht
+kommt nur zu den Betroffenen des Chats, nie zu dem, der sie geschrieben hat, und nicht, wenn man sie schon gelesen hat. Antippen
+öffnet den Chat, bei Aktuelles die Seite Aktuelles.
 
 - **Solange die App läuft** (Web, Windows): Die App hört über die Live-Verbindung von Änderungen, holt die neuesten
   Einträge und zeigt, was andere getan haben, wenn sie nicht im Vordergrund ist.
@@ -506,9 +532,9 @@ Einrichten:
 
 Die App hält `GET /api/live` offen, einen Strom von Server-Sent Events. Nach jeder erfolgreichen Änderung in einem
 Kreis (jede Anfrage außer GET auf `/api/families/{fid}/…`) schickt das Backend allen Mitgliedern, die verbunden sind,
-`{"family": "…", "topic": "…"}` mit `shopping`, `calendar` oder `family`. Inhalte gehen nie mit; die App lädt die
+`{"family": "…", "topic": "…"}` mit `shopping`, `calendar`, `messages` oder `family`. Inhalte gehen nie mit; die App lädt die
 betroffene Seite über die normalen Routen neu, die weiter über Sichtbarkeit entscheiden. Gelesen-Markieren und die
-Auswahl des Kreises melden nichts.
+Auswahl des Kreises melden nichts, ebenso Gelesen und Archivieren bei Nachrichten.
 
 - Alle 25 Sekunden ein Herzschlag, damit Cloudflare die Verbindung nicht nach 100 Sekunden Ruhe schließt. Beim
   Herzschlag prüft das Backend die Sitzung; nach dem Abmelden endet der Strom.

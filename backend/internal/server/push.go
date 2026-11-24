@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -82,6 +83,90 @@ func (s *Server) sendPushes(ctx context.Context, at time.Time) {
 	if err := s.sendDuePushes(ctx, at); err != nil {
 		log.Printf("Push-Nachrichten: %v", err)
 	}
+	if err := s.sendDueChatPushes(ctx, at); err != nil {
+		log.Printf("Push-Nachrichten zu Nachrichten: %v", err)
+	}
+}
+
+// sendDueChatPushes sends each new message once to the devices of the people of its
+// chat, but not to the sender nor to who has read it already.
+func (s *Server) sendDueChatPushes(ctx context.Context, at time.Time) error {
+	rows, err := queryRows(ctx, s.db,
+		`SELECT m.id, m.chat_id, m.family_id, m.body, m.created_at, COALESCE(m.sender_id, '') AS sender_id,
+			ch.kind, ch.name AS chat_name, COALESCE(f.name, '') AS family_name, COALESCE(ms.name, '') AS sender_name,
+			COALESCE((SELECT MIN(x.name) FROM files x WHERE x.chat_message_id = m.id), '') AS file_name,
+			(SELECT COUNT(*) FROM files x WHERE x.chat_message_id = m.id AND x.kind = 'photo') AS photos
+		 FROM chat_messages m JOIN chats ch ON ch.id = m.chat_id
+		 LEFT JOIN families f ON f.id = m.family_id
+		 LEFT JOIN memberships ms ON ms.family_id = m.family_id AND ms.user_id = m.sender_id
+		 WHERE m.pushed_at IS NULL AND m.deleted_at IS NULL AND m.created_at > ?
+		 ORDER BY m.created_at LIMIT 200`,
+		at.Add(-pushWindow).UTC().Format(chatTimeFormat))
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		people, err := chatPeople(ctx, s.db, row["chat_id"].(string))
+		if err != nil {
+			return err
+		}
+		text := row["body"].(string)
+		switch {
+		case anyInt(row["photos"]) > 0:
+			text = "📷 Bild"
+		case row["file_name"] != "":
+			text = "📎 " + row["file_name"].(string)
+		}
+		sender := row["sender_name"].(string)
+		if sender == "" {
+			sender = "Jemand"
+		}
+		title, body := sender, text
+		if row["kind"] == "group" {
+			title, body = row["chat_name"].(string), sender+": "+text
+		}
+		for _, person := range people {
+			if person == row["sender_id"] {
+				continue
+			}
+			var read string
+			err := s.db.QueryRowContext(ctx, `SELECT read_at FROM chat_reads WHERE chat_id = ? AND user_id = ?`, row["chat_id"], person).Scan(&read)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if read >= row["created_at"].(string) {
+				continue
+			}
+			devices, err := queryRows(ctx, s.db,
+				`SELECT d.token, (SELECT COUNT(*) FROM memberships o WHERE o.user_id = d.user_id) AS families
+				 FROM push_devices d WHERE d.user_id = ?`, person)
+			if err != nil {
+				return err
+			}
+			for _, device := range devices {
+				shown := title
+				if anyInt(device["families"]) > 1 && row["family_name"] != "" {
+					shown += " · " + row["family_name"].(string)
+				}
+				token := device["token"].(string)
+				err := s.push.Push(ctx, PushMessage{
+					Token: token, Title: shown, Body: body, Tag: "chat-" + row["chat_id"].(string),
+					Data: map[string]string{"kintura": "message", "family_id": row["family_id"].(string), "chat_id": row["chat_id"].(string)},
+				})
+				if errors.Is(err, errPushGone) {
+					if _, err := s.db.ExecContext(ctx, `DELETE FROM push_devices WHERE token = ?`, token); err != nil {
+						return err
+					}
+				} else if err != nil {
+					log.Printf("Push-Nachricht: %v", err)
+				}
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET pushed_at = ? WHERE id = ?`, chatNow(), row["id"]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) sendDuePushes(ctx context.Context, at time.Time) error {

@@ -1,0 +1,810 @@
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
+import 'package:url_launcher/url_launcher.dart';
+
+import '../api.dart';
+import '../common.dart';
+import '../live_updates.dart';
+import '../session.dart';
+import 'chat_form_screen.dart';
+import 'event_edit_screen.dart' show PickedFile;
+import 'messages_screen.dart';
+
+/// The largest file the server takes, see maxUploadSize in files.go.
+const _maxUpload = 25 << 20;
+
+/// Pictures once loaded, by path, so that scrolling does not fetch them again.
+final _pictures = <String, Future<Uint8List>>{};
+
+Future<Uint8List> _picture(AppSession session, String path) =>
+    _pictures[path] ??= session.api.getBytes(path).catchError((Object e) {
+      _pictures.remove(path);
+      throw e;
+    });
+
+/// A picture shrunk for sending: at most 1600 pixels, as JPEG. Others, as animated
+/// GIFs, go as they are.
+Uint8List? _shrinkPicture(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null || (decoded.numFrames > 1)) return null;
+  const max = 1600;
+  final image = decoded.width >= decoded.height
+      ? (decoded.width > max ? img.copyResize(decoded, width: max) : decoded)
+      : (decoded.height > max ? img.copyResize(decoded, height: max) : decoded);
+  return img.encodeJpg(image, quality: 85);
+}
+
+String _fileSize(num bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  return '${(bytes / 1024 / 1024).toStringAsFixed(1).replaceAll('.', ',')} MB';
+}
+
+/// One chat: the messages, the oldest at the top, and below the field to write with
+/// emojis, pictures and documents. Who may only read along sees no field.
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key, required this.familyId, required this.chatId, this.chat});
+
+  final String familyId;
+  final String chatId;
+
+  /// As the list of chats has it; loaded when missing, as from a notification.
+  final Map<String, dynamic>? chat;
+
+  /// Asks for files; replaced in tests.
+  static Future<List<PickedFile>> Function({required bool pictures}) pickFiles = _pickFiles;
+
+  static Future<List<PickedFile>> _pickFiles({required bool pictures}) async {
+    final files = await FilePicker.pickFiles(type: pictures ? FileType.image : FileType.any);
+    return [for (final file in files) PickedFile(file.name, await file.readAsBytes())];
+  }
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> with LiveReload {
+  final _input = TextEditingController();
+  final _focus = FocusNode();
+  Map<String, dynamic>? _chat;
+  List<Map<String, dynamic>>? _messages;
+  bool _more = false;
+  bool _loadingOlder = false;
+  String? _error;
+  bool _sending = false;
+  int _uploading = 0;
+  bool _emoji = false;
+  bool _started = false;
+
+  String get _base => '/api/families/${widget.familyId}/chats/${widget.chatId}';
+
+  bool get _canWrite => _chat?['can_write'] == true;
+
+  @override
+  void initState() {
+    super.initState();
+    _chat = widget.chat;
+    _input.addListener(() => setState(() {}));
+    _focus.addListener(() {
+      // The keyboard and the emojis take turns.
+      if (_focus.hasFocus && _emoji) setState(() => _emoji = false);
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    listenLive(const {'messages', 'family'}, _reload, everyFamily: true);
+    _reload();
+  }
+
+  @override
+  void dispose() {
+    _input.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    await Future.wait([_loadChat(), _load()]);
+  }
+
+  /// The chat as the list has it: its name, and what the user may do.
+  Future<void> _loadChat() async {
+    final session = SessionScope.of(context);
+    try {
+      final rows = (await session.api.get('/api/chats?family=${widget.familyId}') as List).cast<Map<String, dynamic>>();
+      if (!mounted) return;
+      final chat = rows.where((c) => c['id'] == widget.chatId).firstOrNull;
+      setState(() {
+        if (chat != null) _chat = chat;
+        if (chat == null) _error = 'Diesen Chat gibt es nicht mehr.';
+      });
+    } on ApiException {
+      // What was passed in stays.
+    }
+  }
+
+  Future<void> _load() async {
+    final session = SessionScope.of(context);
+    try {
+      final page = await session.api.get('$_base/messages') as Map<String, dynamic>;
+      if (!mounted) return;
+      final fresh = (page['messages'] as List).cast<Map<String, dynamic>>();
+      setState(() {
+        // Older ones loaded before stay above.
+        final older = [
+          for (final m in _messages ?? const <Map<String, dynamic>>[])
+            if (fresh.isNotEmpty && (m['created_at'] as String).compareTo(fresh.first['created_at'] as String) < 0) m,
+        ];
+        _messages = [...older, ...fresh];
+        if (older.isEmpty) _more = page['more'] == true;
+        _error = null;
+      });
+      await _markRead();
+    } on ApiException catch (e) {
+      if (mounted && _messages == null) setState(() => _error = e.message);
+    }
+  }
+
+  Future<void> _loadOlder() async {
+    final messages = _messages;
+    if (messages == null || messages.isEmpty || _loadingOlder) return;
+    setState(() => _loadingOlder = true);
+    final session = SessionScope.of(context);
+    try {
+      final before = Uri.encodeQueryComponent(messages.first['created_at'] as String);
+      final page = await session.api.get('$_base/messages?before=$before') as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _messages = [...(page['messages'] as List).cast<Map<String, dynamic>>(), ...messages];
+        _more = page['more'] == true;
+      });
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _loadingOlder = false);
+    }
+  }
+
+  Future<void> _markRead() async {
+    final session = SessionScope.of(context);
+    try {
+      await session.api.post('$_base/read');
+      chatsRead.value++;
+    } on ApiException {
+      // Unread for now; the next look tries again.
+    }
+  }
+
+  Future<void> _send() async {
+    final body = _input.text.trim();
+    if (body.isEmpty || _sending) return;
+    final session = SessionScope.of(context);
+    setState(() => _sending = true);
+    final ok = await guarded(context, () => session.api.post('$_base/messages', {'body': body}));
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (!ok) return;
+    _input.clear();
+    await _load();
+  }
+
+  Future<void> _attach({required bool pictures}) async {
+    final session = SessionScope.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final files = await ChatScreen.pickFiles(pictures: pictures);
+    if (files.isEmpty || !mounted) return;
+    setState(() => _uploading += files.length);
+    try {
+      for (final file in files) {
+        var name = file.name;
+        var bytes = file.bytes;
+        if (pictures) {
+          final smaller = await compute(_shrinkPicture, bytes);
+          if (smaller != null) {
+            bytes = smaller;
+            name = '${name.replaceFirst(RegExp(r'\.[^.]*$'), '')}.jpg';
+          }
+        }
+        if (bytes.length > _maxUpload) {
+          messenger.showSnackBar(SnackBar(content: Text('„${file.name}“ ist größer als 25 MB.')));
+          continue;
+        }
+        try {
+          await session.api.upload('$_base/attachments', name, bytes);
+        } on ApiException catch (e) {
+          messenger.showSnackBar(SnackBar(content: Text(e.message)));
+        }
+        if (mounted) setState(() => _uploading--);
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = 0);
+    }
+    if (mounted) await _load();
+  }
+
+  Future<void> _messageMenu(Map<String, dynamic> message) async {
+    if (message['deleted'] == true) return;
+    final body = message['body'] as String? ?? '';
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (body.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.copy),
+                title: const Text('Kopieren'),
+                onTap: () => Navigator.pop(context, 'copy'),
+              ),
+            if (message['can_delete'] == true)
+              ListTile(
+                key: const Key('chat-message-delete'),
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Löschen'),
+                onTap: () => Navigator.pop(context, 'delete'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: body));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Kopiert.')));
+      case 'delete':
+        if (!await confirm(
+          context,
+          'Nachricht löschen?',
+          message: 'Für alle. An ihrer Stelle steht dann „Nachricht gelöscht“.',
+        )) {
+          return;
+        }
+        if (!mounted) return;
+        final session = SessionScope.of(context);
+        if (await guarded(context, () => session.api.delete('$_base/messages/${message['id']}'))) await _load();
+    }
+  }
+
+  Future<void> _openFile(Map<String, dynamic> file) async {
+    if (file['kind'] == 'photo') {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => _PictureScreen(
+            path: '$_base/attachments/${file['id']}',
+            name: file['name'] as String? ?? '',
+            onDownload: () => _download(file),
+          ),
+        ),
+      );
+      return;
+    }
+    await _download(file);
+  }
+
+  /// Opens the file in the browser or the app the system has for it.
+  Future<void> _download(Map<String, dynamic> file) async {
+    final session = SessionScope.of(context);
+    await guarded(context, () async {
+      final result = await session.api.post('$_base/attachments/${file['id']}/link') as Map<String, dynamic>;
+      await launchUrl(Uri.parse(result['url'] as String), mode: LaunchMode.externalApplication);
+    });
+  }
+
+  Future<void> _edit() async {
+    final chat = _chat;
+    if (chat == null) return;
+    final navigator = Navigator.of(context);
+    final result = await navigator.push<String>(
+      MaterialPageRoute(
+        builder: (_) => ChatFormScreen(familyId: widget.familyId, chat: chat),
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (result.isEmpty) {
+      // Deleted.
+      navigator.pop();
+      return;
+    }
+    await _loadChat();
+  }
+
+  Future<void> _archive(bool archived) async {
+    final session = SessionScope.of(context);
+    final navigator = Navigator.of(context);
+    final ok = await guarded(context, () => session.api.put('$_base/archive', {'archived': archived}));
+    if (!ok || !mounted) return;
+    chatsRead.value++;
+    if (archived) {
+      navigator.pop();
+    } else {
+      await _loadChat();
+    }
+  }
+
+  void _toggleEmoji() {
+    if (_emoji) {
+      _focus.requestFocus();
+    } else {
+      _focus.unfocus();
+    }
+    setState(() => _emoji = !_emoji);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = _chat;
+    final messages = _messages;
+    final session = SessionScope.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final group = chat?['kind'] == 'group';
+    final subtitle = <String>[
+      if (session.families.length > 1 && widget.familyId != session.current?.id)
+        session.families.where((f) => f.id == widget.familyId).firstOrNull?.name ?? '',
+      if (group && chat?['assignees_all'] == true) 'Alle im Kreis',
+      if (group && chat?['assignees_all'] != true) '${((chat?['assignee_ids'] as List?)?.length ?? 0) + 1} Personen',
+      if (chat != null && !_canWrite) 'nur lesend',
+    ].where((s) => s.isNotEmpty).join(' · ');
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 0,
+        title: chat == null
+            ? const Text('Nachrichten')
+            : Row(
+                children: [
+                  ChatAvatar(chat, radius: 18),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(chat['name'] as String? ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        if (subtitle.isNotEmpty)
+                          Text(
+                            subtitle,
+                            style: Theme.of(context).textTheme.labelSmall,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+        bottom: chat != null && chatColor(chat) != null && group
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(4),
+                child: Container(height: 4, color: chatColor(chat)),
+              )
+            : null,
+        actions: [
+          if (chat != null)
+            PopupMenuButton<String>(
+              key: const Key('chat-menu'),
+              onSelected: (value) => switch (value) {
+                'edit' => _edit(),
+                'archive' => _archive(true),
+                'unarchive' => _archive(false),
+                _ => null,
+              },
+              itemBuilder: (context) => [
+                if (chat['can_edit'] == true) const PopupMenuItem(value: 'edit', child: Text('Gruppe bearbeiten')),
+                if (chat['archived'] == true)
+                  const PopupMenuItem(value: 'unarchive', child: Text('Wieder in die Liste'))
+                else
+                  const PopupMenuItem(value: 'archive', child: Text('Archivieren')),
+              ],
+            ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: messages == null
+                ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
+                : messages.isEmpty
+                ? EmptyHint(
+                    icon: Icons.chat_bubble_outline,
+                    text: _canWrite ? 'Noch keine Nachrichten. Schreib die erste!' : 'Noch keine Nachrichten.',
+                  )
+                : _list(messages, group),
+          ),
+          if (_uploading > 0) const LinearProgressIndicator(),
+          if (chat != null && !_canWrite)
+            SafeArea(
+              top: false,
+              child: Container(
+                key: const Key('chat-read-only'),
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                color: scheme.surfaceContainerHigh,
+                child: const Text(
+                  'In dieser Gruppe kannst du nur mitlesen. Schreiben können die Personen, die sie betrifft.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            )
+          else if (chat != null)
+            _composer(),
+          if (_emoji && _canWrite)
+            EmojiPicker(
+              textEditingController: _input,
+              config: Config(
+                height: 280,
+                locale: const Locale('de'),
+                checkPlatformCompatibility: !kIsWeb,
+                emojiViewConfig: EmojiViewConfig(
+                  emojiSizeMax: 28 * (defaultTargetPlatform == TargetPlatform.iOS ? 1.2 : 1.0),
+                  backgroundColor: scheme.surface,
+                ),
+                categoryViewConfig: CategoryViewConfig(
+                  backgroundColor: scheme.surface,
+                  indicatorColor: scheme.primary,
+                  iconColorSelected: scheme.primary,
+                ),
+                bottomActionBarConfig: BottomActionBarConfig(
+                  backgroundColor: scheme.surfaceContainerHigh,
+                  buttonColor: scheme.surfaceContainerHigh,
+                  buttonIconColor: scheme.onSurfaceVariant,
+                ),
+                searchViewConfig: SearchViewConfig(backgroundColor: scheme.surface, hintText: 'Emoji suchen'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _list(List<Map<String, dynamic>> messages, bool group) {
+    // The newest at the bottom: built from there.
+    final rows = <Widget>[];
+    String? day;
+    for (final message in messages) {
+      final at = DateTime.tryParse(message['created_at'] as String? ?? '')?.toLocal();
+      final key = at == null ? '' : dateFormat.format(at);
+      if (key != day && at != null) {
+        day = key;
+        rows.add(_DayLabel(at));
+      }
+      rows.add(
+        _Bubble(
+          message: message,
+          group: group,
+          base: _base,
+          onLongPress: () => _messageMenu(message),
+          onOpenFile: _openFile,
+        ),
+      );
+    }
+    if (_more) {
+      rows.insert(
+        0,
+        Center(
+          child: TextButton(
+            key: const Key('chat-older'),
+            onPressed: _loadingOlder ? null : _loadOlder,
+            child: const Text('Ältere Nachrichten laden'),
+          ),
+        ),
+      );
+    }
+    final reversed = rows.reversed.toList();
+    return ListView.builder(
+      key: const Key('chat-messages'),
+      reverse: true,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      itemCount: reversed.length,
+      itemBuilder: (context, index) => reversed[index],
+    );
+  }
+
+  Widget _composer() {
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          IconButton(
+            key: const Key('chat-emoji'),
+            tooltip: _emoji ? 'Tastatur' : 'Emojis',
+            icon: Icon(_emoji ? Icons.keyboard_outlined : Icons.emoji_emotions_outlined),
+            onPressed: _toggleEmoji,
+          ),
+          PopupMenuButton<bool>(
+            key: const Key('chat-attach'),
+            tooltip: 'Anhängen',
+            icon: const Icon(Icons.attach_file),
+            position: PopupMenuPosition.over,
+            onSelected: (pictures) => _attach(pictures: pictures),
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: true,
+                child: ListTile(
+                  leading: Icon(Icons.image_outlined),
+                  title: Text('Bild'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: false,
+                child: ListTile(
+                  leading: Icon(Icons.description_outlined),
+                  title: Text('Dokument'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+          Expanded(
+            child: CallbackShortcuts(
+              // On a keyboard Enter sends, Shift + Enter starts a new line.
+              bindings: {
+                const SingleActivator(LogicalKeyboardKey.enter): _send,
+                const SingleActivator(LogicalKeyboardKey.numpadEnter): _send,
+              },
+              child: TextField(
+                key: const Key('chat-input'),
+                controller: _input,
+                focusNode: _focus,
+                minLines: 1,
+                maxLines: 5,
+                maxLength: 4000,
+                textCapitalization: TextCapitalization.sentences,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  hintText: 'Nachricht',
+                  counterText: '',
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(24))),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton.filled(
+            key: const Key('chat-send'),
+            tooltip: 'Senden',
+            icon: const Icon(Icons.send),
+            onPressed: _sending || _input.text.trim().isEmpty ? null : _send,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayLabel extends StatelessWidget {
+  const _DayLabel(this.day);
+
+  final DateTime day;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(day.year, day.month, day.day);
+    final label = switch (today.difference(that).inDays) {
+      0 => 'Heute',
+      1 => 'Gestern',
+      _ => dateFormat.format(day),
+    };
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(10)),
+        child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+      ),
+    );
+  }
+}
+
+/// One message: on the right one's own, on the left the others', in a group with the
+/// name of who wrote it. Pictures show in it, documents as a row to open.
+class _Bubble extends StatelessWidget {
+  const _Bubble({
+    required this.message,
+    required this.group,
+    required this.base,
+    required this.onLongPress,
+    required this.onOpenFile,
+  });
+
+  final Map<String, dynamic> message;
+  final bool group;
+  final String base;
+  final VoidCallback onLongPress;
+  final void Function(Map<String, dynamic> file) onOpenFile;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final own = message['own'] == true;
+    final deleted = message['deleted'] == true;
+    final background = own ? scheme.primaryContainer : scheme.surfaceContainerHigh;
+    final foreground = own ? scheme.onPrimaryContainer : scheme.onSurface;
+    final files = (message['attachments'] as List? ?? const []).cast<Map<String, dynamic>>();
+    final body = message['body'] as String? ?? '';
+    final at = DateTime.tryParse(message['created_at'] as String? ?? '')?.toLocal();
+    final senderColor = message['sender_color'] as String? ?? '';
+    final session = SessionScope.of(context);
+    return Align(
+      alignment: own ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: GestureDetector(
+          key: ValueKey('chat-message-${message['id']}'),
+          onLongPress: onLongPress,
+          onSecondaryTap: onLongPress,
+          child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 2),
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+            decoration: BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(own ? 16 : 4),
+                bottomRight: Radius.circular(own ? 4 : 16),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (group && !own)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(
+                      (message['sender_name'] as String? ?? '').isEmpty
+                          ? 'Ehemaliges Mitglied'
+                          : message['sender_name'] as String,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: senderColor.isEmpty ? scheme.primary : parseHexColor(senderColor),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                if (deleted)
+                  Text(
+                    'Nachricht gelöscht',
+                    style: TextStyle(color: foreground.withValues(alpha: 0.7), fontStyle: FontStyle.italic),
+                  ),
+                for (final file in files)
+                  if (file['kind'] == 'photo')
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: InkWell(
+                        key: ValueKey('chat-picture-${file['id']}'),
+                        onTap: () => onOpenFile(file),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              maxWidth: 260,
+                              maxHeight: 320,
+                              minWidth: 120,
+                              minHeight: 80,
+                            ),
+                            child: FutureBuilder<Uint8List>(
+                              future: _picture(session, '$base/attachments/${file['id']}'),
+                              builder: (context, snapshot) => snapshot.hasData
+                                  ? Image.memory(snapshot.data!, fit: BoxFit.cover)
+                                  : Container(
+                                      width: 200,
+                                      height: 150,
+                                      color: scheme.surfaceContainerHighest,
+                                      child: snapshot.hasError ? const Icon(Icons.broken_image_outlined) : null,
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    InkWell(
+                      key: ValueKey('chat-file-${file['id']}'),
+                      onTap: () => onOpenFile(file),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.description_outlined, color: foreground),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    file['name'] as String? ?? '',
+                                    style: TextStyle(color: foreground, decoration: TextDecoration.underline),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    _fileSize((file['size'] as num?) ?? 0),
+                                    style: theme.textTheme.labelSmall?.copyWith(color: foreground),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                if (body.isNotEmpty) Text(body, style: TextStyle(color: foreground, fontSize: 15)),
+                Align(
+                  alignment: Alignment.bottomRight,
+                  child: Text(
+                    at == null ? '' : timeFormat.format(at),
+                    style: theme.textTheme.labelSmall?.copyWith(color: foreground.withValues(alpha: 0.7), fontSize: 10),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A picture of a chat, large, to zoom and to save.
+class _PictureScreen extends StatelessWidget {
+  const _PictureScreen({required this.path, required this.name, required this.onDownload});
+
+  final String path;
+  final String name;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = SessionScope.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(name),
+        actions: [IconButton(tooltip: 'Herunterladen', icon: const Icon(Icons.download), onPressed: onDownload)],
+      ),
+      body: FutureBuilder<Uint8List>(
+        future: _picture(session, path),
+        builder: (context, snapshot) => snapshot.hasData
+            ? InteractiveViewer(maxScale: 5, child: Center(child: Image.memory(snapshot.data!)))
+            : const Center(child: CircularProgressIndicator()),
+      ),
+    );
+  }
+}
+
+/// The chat behind a notification: shows it once the circle is known.
+class ChatFromNotification extends StatelessWidget {
+  const ChatFromNotification({super.key, required this.familyId, required this.chatId});
+
+  final String familyId;
+  final String chatId;
+
+  @override
+  Widget build(BuildContext context) {
+    final session = SessionScope.of(context);
+    if (!session.families.any((f) => f.id == familyId)) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Nachrichten')),
+        body: const EmptyHint(icon: Icons.chat_bubble_outline, text: 'Diesen Kreis gibt es für dich nicht mehr.'),
+      );
+    }
+    return ChatScreen(familyId: familyId, chatId: chatId);
+  }
+}

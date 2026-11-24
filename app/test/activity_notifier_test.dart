@@ -80,6 +80,45 @@ void main() {
     void background(WidgetTester tester) => tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
     void front(WidgetTester tester) => tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
 
+    testWidgets('melden neue Nachrichten anderer, nicht eigene und nicht schon gelesene', (tester) async {
+      await start(tester, enabledBefore: true);
+      Map<String, Object?> chat(String id, String name, String body, {bool own = false, int unread = 1, String kind = 'group'}) =>
+          {
+            'id': id,
+            'family_id': 'f1',
+            'kind': kind,
+            'name': name,
+            'unread': unread,
+            'archived': false,
+            'last_message': {
+              'body': body,
+              'created_at': DateTime.utc(2026, 11, 24, 10, _minute++).toIso8601String(),
+              'sender_name': own ? 'Anna' : 'Ben',
+              'own': own,
+              'deleted': false,
+              'photos': 0,
+              'documents': 0,
+            },
+          };
+      backend.chats = [chat('c1', 'Urlaub', 'Vorher')];
+      session.live.emit(const LiveEvent('f1', 'messages'));
+      await tester.pump(const Duration(seconds: 2));
+      // A chat new since the first look counts; this one is about what comes next.
+      notifications.shown.clear();
+      background(tester);
+      addTearDown(() => front(tester));
+
+      backend.chats = [
+        chat('c1', 'Urlaub', 'Ans Meer!'),
+        chat('c2', 'Ben', 'Kommst du?', kind: 'direct'),
+        chat('c3', 'Eigenes', 'Von mir', own: true, unread: 0),
+        chat('c4', 'Gelesen', 'Schon gesehen', unread: 0),
+      ];
+      session.live.emit(const LiveEvent('f1', 'messages'));
+      await tester.pump(const Duration(seconds: 2));
+      expect(notifications.shown.map((n) => (n.$2, n.$3)), [('Urlaub', 'Ben: Ans Meer!'), ('Ben', 'Kommst du?')]);
+    });
+
     testWidgets('melden Neues anderer, solange die App im Hintergrund ist', (tester) async {
       await start(tester);
       expect(notifier.enabled.value, isFalse);
@@ -188,7 +227,7 @@ void main() {
         backend = FakeBackend();
         session = AppSession(api: ApiClient(client: backend.client, baseUrl: 'http://test'), tokens: MemoryTokens()..token = 't1');
         await session.start();
-        notifier = ActivityNotifier(session: session, notifications: _FakeNotifications(), push: PushMessaging(), onOpen: () => opens++);
+        notifier = ActivityNotifier(session: session, notifications: _FakeNotifications(), push: PushMessaging(), onOpen: (_) => opens++);
         await notifier.start();
         addTearDown(notifier.dispose);
         // The frame after signing in.

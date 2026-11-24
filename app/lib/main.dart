@@ -16,6 +16,7 @@ import 'live_updates.dart';
 import 'notifications/activity_notifier.dart';
 import 'notifications/push.dart';
 import 'screens/activity_screen.dart';
+import 'screens/chat_screen.dart';
 import 'update_check.dart';
 
 const seedColor = Color(0xFF2E6B57);
@@ -43,7 +44,7 @@ Future<void> main() async {
   session.start();
   SessionSync(session: session).start();
   LiveConnection(session: session).start();
-  activityNotifier = ActivityNotifier(session: session, push: PushMessaging(), onOpen: _openActivities);
+  activityNotifier = ActivityNotifier(session: session, push: PushMessaging(), onOpen: _openFromNotification);
   unawaited(activityNotifier!.start());
   final updates = updateCheck = UpdateCheck(api: api, version: version)..start();
   runApp(KinturaApp(session: session, updates: updates));
@@ -166,9 +167,15 @@ class _Root extends StatelessWidget {
   }
 }
 
-/// Aktuelles, from a tapped notification; over what is open, once signed in.
-void _openActivities() {
+/// Aktuelles or a chat, from a tapped notification; over what is open, once signed in.
+void _openFromNotification(OpenTarget target) {
   final navigator = appNavigator.currentState;
   if (navigator == null || activityNotifier?.session.status != SessionStatus.signedIn) return;
-  navigator.push(MaterialPageRoute<void>(builder: (_) => const ActivityScreen()));
+  navigator.push(
+    MaterialPageRoute<void>(
+      builder: (_) => target.isChat
+          ? ChatFromNotification(familyId: target.familyId, chatId: target.chatId)
+          : const ActivityScreen(),
+    ),
+  );
 }

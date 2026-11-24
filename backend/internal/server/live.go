@@ -110,6 +110,12 @@ func liveTopic(path string) string {
 			return ""
 		}
 		return "shopping"
+	case "chats":
+		// Read and archived is one's own business.
+		if len(parts) > 2 && (strings.HasSuffix(parts[2], "/read") || strings.HasSuffix(parts[2], "/archive")) {
+			return ""
+		}
+		return "messages"
 	case "events", "calendars", "categories", "attachments", "calendar-cleanup":
 		return "calendar"
 	case "activities", "select":

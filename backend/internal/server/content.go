@@ -202,45 +202,6 @@ func (s *Server) putMeal(w http.ResponseWriter, r *http.Request, c reqCtx) error
 	return noContent(w)
 }
 
-// --- Messages ---
-
-func (s *Server) listMessages(w http.ResponseWriter, r *http.Request, c reqCtx) error {
-	rows, err := queryRows(r.Context(), s.db,
-		`SELECT id, sender_id, sender_name, body, created_at FROM (
-			SELECT m.id, m.sender_id, COALESCE(s.name, u.name) AS sender_name, m.body, m.created_at, m.seq
-			FROM messages m JOIN users u ON u.id = m.sender_id
-			LEFT JOIN memberships s ON s.user_id = m.sender_id AND s.family_id = m.family_id
-			WHERE m.family_id = ? ORDER BY m.created_at DESC, m.seq DESC LIMIT 200
-		 ) AS recent ORDER BY created_at, seq`, c.familyID)
-	if err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusOK, rows)
-	return nil
-}
-
-func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, c reqCtx) error {
-	var in struct {
-		Body string `json:"body"`
-	}
-	if err := readJSON(w, r, &in); err != nil {
-		return err
-	}
-	body, err := required(in.Body, "Nachricht", 4000)
-	if err != nil {
-		return err
-	}
-	id := newID()
-	if _, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO messages (id, family_id, sender_id, body, created_at, seq)
-		 VALUES (?1, ?2, ?3, ?4, ?5, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE family_id = ?2))`,
-		id, c.familyID, c.userID, body, now()); err != nil {
-		return err
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
-	return nil
-}
-
 // --- Special days ---
 
 func (s *Server) listSpecialDays(w http.ResponseWriter, r *http.Request, c reqCtx) error {
