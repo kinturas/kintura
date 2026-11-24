@@ -406,7 +406,7 @@ class _FamilyTabState extends State<_FamilyTab> {
     }
     final session = SessionScope.of(context);
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: scrollPadding(context, const EdgeInsets.all(16)),
       children: [
         FamilyTypeField(
           value: _type,
@@ -556,7 +556,7 @@ class _PersonPageState extends State<_PersonPage> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: scrollPadding(context, const EdgeInsets.all(16)),
         children: widget.children,
       ),
     );

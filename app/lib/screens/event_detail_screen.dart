@@ -333,7 +333,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
 
   Widget _reduced(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: scrollPadding(context, const EdgeInsets.all(16)),
       children: [
         _card(context, [
           _row(context, Icons.schedule, [_whenText(_entry)]),
@@ -422,7 +422,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     final creator = event['creator_name'] as String? ?? '';
     final rule = event['recurrence'] as Map<String, dynamic>?;
     final list = ListView(
-      padding: const EdgeInsets.all(16),
+      padding: scrollPadding(context, const EdgeInsets.all(16)),
       children: [
         _card(context, [
           _row(context, Icons.schedule, [_whenText(_entry), if (rule != null) recurrenceLabel(rule)]),

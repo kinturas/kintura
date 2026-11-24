@@ -45,7 +45,7 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Feedback')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: scrollPadding(context, const EdgeInsets.all(16)),
         children: [
           const Text('Was gefällt dir, was fehlt, was funktioniert nicht? Dein Name und deine E-Mail-Adresse werden mitgeschickt.'),
           const SizedBox(height: 16),

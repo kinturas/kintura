@@ -609,7 +609,7 @@ class _FeedScreenState extends State<_FeedScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Kalender-URL')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: scrollPadding(context, const EdgeInsets.all(16)),
         children: [
           TextField(
             key: const Key('feed-name'),

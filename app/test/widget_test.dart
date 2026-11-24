@@ -3053,6 +3053,20 @@ void main() {
       await disposeApp(tester);
     });
 
+    testWidgets('der letzte Eintrag lässt sich über der Navigationsleiste von Android ganz antippen', (tester) async {
+      await openMember(tester, FakeBackend());
+      // A small phone, with the bar of the system across the bottom.
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.padding = const FakeViewPadding(bottom: 48);
+      addTearDown(tester.view.resetPadding);
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView).last, const Offset(0, -2000));
+      await tester.pumpAndSettle();
+      final tile = tester.getRect(find.byKey(const Key('member-login-code')));
+      expect(tile.bottom, lessThanOrEqualTo(640 - 48));
+      await disposeApp(tester);
+    });
+
     testWidgets('Anmeldecode erstellen steht nach Profil bearbeiten und zeigt den Code', (tester) async {
       final backend = FakeBackend();
       await openMember(tester, backend);

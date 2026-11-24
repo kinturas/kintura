@@ -551,3 +551,9 @@ class DateField extends StatelessWidget {
     );
   }
 }
+
+/// [padding] of a list that runs to the bottom of the page, plus what the system covers
+/// there, as the navigation bar of Android. A ListView with a padding of its own leaves
+/// that out, and its last entry would end up half underneath. Inside a SafeArea it adds nothing.
+EdgeInsets scrollPadding(BuildContext context, EdgeInsets padding) =>
+    padding + EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom);
