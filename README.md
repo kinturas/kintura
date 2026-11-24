@@ -37,12 +37,14 @@ Jede Anfrage der App nennt ihre Version und Plattform (`X-App-Version: 0.0.13+7`
 Die älteste App, mit der das Backend noch funktioniert, steht als `minAppVersion` in
 `backend/internal/server/appversion.go`. **Bricht eine Änderung ältere Apps** (eine Route fällt weg oder ändert sich
 unverträglich), wird sie dort auf die Version des anstehenden Releases gesetzt. Ältere Apps bekommen dann auf jede Anfrage
-`426` und zeigen die Seite „Update nötig“: im Web mit „Neu laden“, bei Android und Windows mit einem Link zur Website.
+`426` und zeigen die Seite „Update nötig“: im Web mit „Neu laden“, bei Android und Windows mit dem Download der neuen Version.
 `GET /api/version` bleibt für sie erreichbar. Anfragen ohne Version, etwa von Apps vor dieser Prüfung, lässt das Backend durch.
 
 Ohne Sperre zeigen die Apps einen Hinweis „Eine neue Version von Kintura ist da“: die Web-App, sobald der Server eine
-andere Version hat, Android und Windows, sobald `releases.json` der Website (`WEBSITE_URL`) einen neueren Build für ihre
-Plattform nennt. Ohne `WEBSITE_URL` gibt es diesen Hinweis bei Android und Windows nicht.
+andere Version hat, Android und Windows, sobald es auf GitHub einen neueren Release `android-v…` bzw. `windows-v…` mit
+APK bzw. `…-windows-setup.exe` gibt. Sie fragen dafür die GitHub-API öffentlich und höchstens alle 10 Minuten
+(`--dart-define=RELEASES_REPO=owner/name` für einen Fork, Standard `kinturas/kintura`). „Herunterladen“ öffnet die Datei im
+Browser, sie wird über die alte Version installiert. Unter Profil, Über lässt sich mit „Nach Updates suchen“ auch von Hand prüfen.
 
 ## Docker
 
@@ -160,7 +162,7 @@ Get-Content app/android/key.properties -Raw | Set-Clipboard
 | `S3_PATH_STYLE` | `false` | `true` für Dienste ohne Bucket-Subdomains |
 | `APP_URL` | `http://localhost:8080` | Basis für Links in Mails und Downloads |
 | `CORS_ORIGIN` | `*` | Erlaubter Ursprung der Web-App |
-| `WEBSITE_URL` | | Website mit den Downloads, etwa `https://kintura.de`; Android und Windows verweisen für Updates dorthin |
+| `WEBSITE_URL` | | Website mit den Downloads, etwa `https://kintura.de`; Android und Windows verweisen für Updates dorthin, falls GitHub nicht erreichbar ist |
 | `SMTP_HOST`, `SMTP_PORT` | Port `587` | Mailserver (Port 465 nutzt direktes TLS) |
 | `SMTP_USER`, `SMTP_PASS` | | Zugangsdaten |
 | `SMTP_FROM` | `SMTP_USER` | Absenderadresse |

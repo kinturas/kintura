@@ -4,6 +4,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../session.dart';
+import '../update_check.dart';
 
 const _copyright = '© 2026 Kintura';
 
@@ -31,6 +32,7 @@ class AboutScreen extends StatelessWidget {
               );
             },
           ),
+          if (updateCheck case final check?) UpdateTile(check: check),
           const ListTile(title: Text('Copyright'), subtitle: Text(_copyright)),
           ListTile(
             title: const Text('Impressum'),

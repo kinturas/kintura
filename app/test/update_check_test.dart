@@ -7,21 +7,50 @@ import 'package:http/testing.dart';
 import 'package:kintura/api.dart';
 import 'package:kintura/update_check.dart';
 
-/// A server and a website: GET /api/version and releases.json, with the headers seen.
+/// A server and GitHub: GET /api/version and the releases, with the requests seen.
 class _Fake {
-  _Fake({this.serverVersion = '0.0.14+40', this.minApp = '0.0.0', this.website = 'https://kintura.test', this.releases = const []});
+  _Fake({this.serverVersion = '0.0.14+40', this.minApp = '0.0.0', this.releases = const []});
 
   String serverVersion;
   String minApp;
-  String website;
+
+  /// Tags on GitHub, each with the file the deploy workflow uploads.
   List<String> releases;
-  final seen = <Map<String, String>>[];
+
+  /// Tags released without their file yet.
+  List<String> withoutFile = [];
+  int githubStatus = 200;
+  final seen = <http.BaseRequest>[];
+
+  int get githubCalls => seen.where((r) => r.url.host == 'api.github.com').length;
+
+  static String _file(String tag) {
+    final version = tag.substring(tag.indexOf('-v') + 2);
+    return tag.startsWith('windows') ? 'kintura-$version-windows-setup.exe' : 'kintura-$version.apk';
+  }
 
   late final client = MockClient((request) async {
-    seen.add(request.headers);
+    seen.add(request);
+    if (request.url.host == 'api.github.com') {
+      expect(request.url.path, '/repos/kinturas/kintura/releases');
+      final body = [
+        for (final tag in releases)
+          {
+            'tag_name': tag,
+            'draft': false,
+            'prerelease': false,
+            'html_url': 'https://github.com/kinturas/kintura/releases/tag/$tag',
+            'assets': [
+              if (!withoutFile.contains(tag))
+                {'name': _file(tag), 'browser_download_url': 'https://github.com/download/$tag/${_file(tag)}'},
+            ],
+          },
+        {'tag_name': 'web-v9.9.9', 'draft': false, 'prerelease': false, 'assets': const []},
+      ];
+      return http.Response.bytes(utf8.encode(jsonEncode(body)), githubStatus);
+    }
     final body = switch (request.url.path) {
-      '/api/version' => {'version': serverVersion, 'min_app_version': minApp, 'download_url': website},
-      '/releases.json' => [for (final tag in releases) {'tag': tag, 'published': '2026-11-01T00:00:00Z', 'asset': 'x'}],
+      '/api/version' => {'version': serverVersion, 'min_app_version': minApp, 'download_url': ''},
       '/api/me' => const {'error': 'Diese Version von Kintura ist zu alt.'},
       _ => const {},
     };
@@ -47,8 +76,8 @@ void main() {
     final fake = _Fake();
     final api = fake.api..clientHeaders = const {'X-App-Version': '0.0.13+7', 'X-App-Platform': 'android'};
     await api.get('/api/version');
-    expect(fake.seen.last['X-App-Version'], '0.0.13+7');
-    expect(fake.seen.last['X-App-Platform'], 'android');
+    expect(fake.seen.last.headers['X-App-Version'], '0.0.13+7');
+    expect(fake.seen.last.headers['X-App-Platform'], 'android');
 
     expect(api.updateRequired.value, isFalse);
     await expectLater(api.get('/api/me'), throwsA(isA<ApiException>().having((e) => e.status, 'status', 426)));
@@ -56,32 +85,56 @@ void main() {
   });
 
   group('Android und Windows', () {
-    test('eine neuere Version auf der Website ist ein Hinweis, eine ältere nicht', () async {
+    test('ein neuerer Release auf GitHub ist ein Hinweis, ein älterer nicht', () async {
       final fake = _Fake(releases: ['android-v0.0.13-7', 'windows-v0.0.14-9', 'android-v0.0.12-6']);
       final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client);
-      await check.check();
+      expect(await check.check(), UpdateStatus.upToDate);
       expect(check.available.value, isFalse);
-      expect(check.downloadUrl.value, 'https://kintura.test');
+      expect(check.latest.value?.name, '0.0.13 (7)');
 
       fake.releases = [...fake.releases, 'android-v0.0.13-8'];
-      await check.check();
+      expect(await check.check(force: true), UpdateStatus.available);
       expect(check.available.value, isTrue);
       expect(check.required.value, isFalse);
+      expect(check.latest.value?.name, '0.0.13 (8)');
+      expect(check.latest.value?.downloadUrl, 'https://github.com/download/android-v0.0.13-8/kintura-0.0.13-8.apk');
     });
 
-    test('ohne Website kein Hinweis, die Mindestversion gilt trotzdem', () async {
-      final fake = _Fake(website: '', minApp: '0.1.0', releases: ['android-v9.9.9-99']);
+    test('Windows bekommt den Installer', () async {
+      final fake = _Fake(releases: ['android-v0.0.15-1', 'windows-v0.0.14-9']);
+      final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'windows', client: fake.client);
+      expect(await check.check(), UpdateStatus.available);
+      expect(check.latest.value?.downloadUrl, endsWith('kintura-0.0.14-9-windows-setup.exe'));
+    });
+
+    test('ein Release ohne Datei zählt noch nicht', () async {
+      final fake = _Fake(releases: ['android-v0.0.13-7', 'android-v0.0.14-1'])..withoutFile = ['android-v0.0.14-1'];
+      final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client);
+      expect(await check.check(), UpdateStatus.upToDate);
+    });
+
+    test('GitHub wird nur alle paar Minuten gefragt, außer von Hand', () async {
+      final fake = _Fake(releases: ['android-v0.0.13-7']);
       final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client);
       await check.check();
+      await check.check();
+      expect(fake.githubCalls, 1);
+      await check.check(force: true);
+      expect(fake.githubCalls, 2);
+    });
+
+    test('ohne Antwort von GitHub kein Hinweis, die Mindestversion gilt trotzdem', () async {
+      final fake = _Fake(minApp: '0.1.0', releases: ['android-v9.9.9-99'])..githubStatus = 403;
+      final check = UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client);
+      expect(await check.check(), UpdateStatus.failed);
       expect(check.available.value, isFalse);
       expect(check.required.value, isTrue);
-      expect(check.canUpdate, isFalse);
     });
 
     test('ein Entwicklungs-Build ohne Version vergleicht nichts', () async {
       final fake = _Fake(minApp: '9.0.0');
       final check = UpdateCheck(api: fake.api, version: '', platform: 'android', client: fake.client);
-      await check.check();
+      expect(await check.check(), UpdateStatus.unknown);
       expect(check.required.value, isFalse);
       expect(fake.seen, isEmpty);
     });
@@ -90,13 +143,11 @@ void main() {
   test('Web: eine andere Version auf dem Server heißt neu laden', () async {
     final fake = _Fake(serverVersion: '0.0.13+40');
     final check = UpdateCheck(api: fake.api, version: '0.0.13+40', platform: 'web', client: fake.client);
-    await check.check();
-    expect(check.available.value, isFalse);
+    expect(await check.check(), UpdateStatus.upToDate);
     fake.serverVersion = '0.0.14+41';
-    await check.check();
-    expect(check.available.value, isTrue);
-    // The web app never asks the website.
-    expect(fake.seen.length, 2);
+    expect(await check.check(), UpdateStatus.available);
+    // The web app never asks GitHub.
+    expect(fake.githubCalls, 0);
   });
 
   Future<UpdateCheck> pumpBanner(WidgetTester tester, UpdateCheck check) async {
@@ -116,6 +167,7 @@ void main() {
     await tester.runAsync(check.check);
     await tester.pump();
     expect(find.byKey(const Key('update-banner')), findsOneWidget);
+    expect(find.text('Kintura 0.0.14 (9) ist da.'), findsOneWidget);
     expect(find.text('Herunterladen'), findsOneWidget);
     expect(find.text('Die App'), findsOneWidget);
 
@@ -135,5 +187,40 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Lade die Seite neu'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Neu laden'), findsOneWidget);
+  });
+
+  group('Über: nach Updates suchen', () {
+    Future<void> pumpTile(WidgetTester tester, UpdateCheck check) => tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: UpdateTile(check: check))),
+    );
+
+    Future<void> tapAndWait(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('about-update')));
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+
+    testWidgets('neueste Version', (tester) async {
+      final fake = _Fake(releases: ['android-v0.0.13-7']);
+      await pumpTile(tester, UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client));
+      await tapAndWait(tester);
+      expect(find.text('Du hast die neueste Version.'), findsOneWidget);
+      expect(find.byKey(const Key('about-update-download')), findsNothing);
+    });
+
+    testWidgets('neue Version zum Herunterladen', (tester) async {
+      final fake = _Fake(releases: ['android-v0.0.14-1']);
+      await pumpTile(tester, UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client));
+      await tapAndWait(tester);
+      expect(find.text('Version 0.0.14 (1) ist da.'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Herunterladen'), findsOneWidget);
+    });
+
+    testWidgets('Entwicklungsversion', (tester) async {
+      final fake = _Fake();
+      await pumpTile(tester, UpdateCheck(api: fake.api, version: '', platform: 'android', client: fake.client));
+      expect(find.text('Entwicklungsversion, ohne Updates'), findsOneWidget);
+    });
   });
 }

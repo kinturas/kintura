@@ -45,7 +45,7 @@ Future<void> main() async {
   LiveConnection(session: session).start();
   activityNotifier = ActivityNotifier(session: session, push: PushMessaging(), onOpen: _openActivities);
   unawaited(activityNotifier!.start());
-  final updates = UpdateCheck(api: api, version: version)..start();
+  final updates = updateCheck = UpdateCheck(api: api, version: version)..start();
   runApp(KinturaApp(session: session, updates: updates));
 }
 
