@@ -95,10 +95,7 @@ class _ShoppingScreenState extends State<ShoppingScreen> with LiveReload {
   static void _keepOnDevice(AppSession session, List<dynamic> lists) {
     if (session.api.offline.value || session.api.cache == null) return;
     final base = '${session.familyPath}/shopping';
-    for (final path in [
-      '$base/articles',
-      for (final list in lists) '$base/lists/${(list as Map)['id']}/items',
-    ]) {
+    for (final path in ['$base/articles', for (final list in lists) '$base/lists/${(list as Map)['id']}/items']) {
       // What does not load now is simply not there offline.
       session.api.get(path).ignore();
     }
@@ -536,9 +533,9 @@ class _ListFormScreenState extends State<_ListFormScreen> {
                             const SizedBox(height: 8),
                             Text(
                               'Mit Datum steht die Liste im Kalender unter „Geplante Aufgaben“.',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                              ),
+                              style: Theme.of(
+                                context,
+                              ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                             ),
                           ],
                         ),
@@ -702,8 +699,9 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
         // From the server or, offline, from the device: either way with what still waits.
         _items = _outbox.apply(_family, _list['id'] as String, (results[0] as List).cast<Map<String, dynamic>>());
         if (results.length > 1) _articles = mergeArticles(results[1] as List);
-        // Made offline, the server does not know them yet.
-        for (final name in _outbox.newArticles(_family)) {
+        // Made offline, the server does not know them yet. And entries whose article is
+        // gone, left from before deleting took them along: own articles, so they can go.
+        for (final name in [..._outbox.newArticles(_family), for (final item in _items) item['name'] as String]) {
           _articles?.putIfAbsent(name, () => Article(name, ownCategory, '', custom: true));
         }
         _error = null;
@@ -720,7 +718,8 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
     return null;
   }
 
-  Article _articleOf(String name) => _articles?[name] ?? Article(name, ownCategory, '');
+  Article _articleOf(String name) =>
+      _articles?[name] ?? catalogArticles[name] ?? Article(name, ownCategory, '', custom: true);
 
   bool _isOpen(String name) => _itemOf(name)?['done'] == false;
 
@@ -988,7 +987,9 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> with LiveReload
 
   Future<void> _editList() async {
     final session = SessionScope.of(context);
-    final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(builder: (_) => _ListFormScreen(list: _list)));
+    final saved = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => _ListFormScreen(list: _list)));
     if (saved != true || !mounted) return;
     List<dynamic>? lists;
     await guarded(context, () async {
@@ -1375,10 +1376,21 @@ class _ArticleScreenState extends State<_ArticleScreen> {
   Future<void> _deleteArticle() async {
     final session = SessionScope.of(context);
     final navigator = Navigator.of(context);
+    // Other lists the server checks.
+    if (_item?['done'] == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '„${widget.article.name}“ steht auf der Liste. Nimm ihn erst herunter, dann lässt er sich löschen.',
+          ),
+        ),
+      );
+      return;
+    }
     if (!await confirm(
       context,
       '„${widget.article.name}“ löschen?',
-      message: 'Der Artikel verschwindet aus den eigenen Artikeln. Auf Listen bleibt er stehen.',
+      message: 'Der Artikel wird ganz gelöscht, auch unter „Zuletzt verwendet“ auf allen Listen.',
     )) {
       return;
     }
@@ -1952,8 +1964,7 @@ class _ShoppingCommentsScreenState extends State<ShoppingCommentsScreen> with Li
                               style: text.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                             ),
                           ),
-                        for (final comment in comments)
-                          CommentTile(comment: comment, path: _path, onChanged: _load),
+                        for (final comment in comments) CommentTile(comment: comment, path: _path, onChanged: _load),
                       ],
                     ),
                   ),

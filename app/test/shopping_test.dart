@@ -111,7 +111,10 @@ void main() {
       for (final name in ['Birnen', 'Bier', 'Binden', 'Kohlrabi', 'Kürbis', 'Glühbirne']) {
         expect(_tile(name), findsOneWidget, reason: name);
       }
-      expect(find.descendant(of: find.byKey(const Key('shopping-own-article')), matching: find.text('Bi')), findsOneWidget);
+      expect(
+        find.descendant(of: find.byKey(const Key('shopping-own-article')), matching: find.text('Bi')),
+        findsOneWidget,
+      );
       await tester.tap(find.byKey(const Key('shopping-own-article')));
       await tester.pumpAndSettle();
       expect(backend.writes['POST articles'], {'name': 'Bi'});
@@ -271,6 +274,58 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
       await tester.pumpAndSettle();
       expect(backend.writes['DELETE articles'], {'name': 'Übertopf'});
+      await disposeApp(tester);
+    });
+
+    testWidgets('Reste gelöschter Artikel sind eigene Artikel, auf der Liste lassen sie sich nicht löschen', (
+      tester,
+    ) async {
+      final backend = FakeBackend();
+      // Deleted before deleting took its entries along: only "Zuletzt verwendet" knows it.
+      backend.shoppingItems.add({
+        'id': 'i9',
+        'name': 'Gartenschlauch',
+        'amount': '',
+        'note': '',
+        'urgency': '',
+        'done': true,
+        'photo_ids': <String>[],
+      });
+      backend.shoppingItems.add({
+        'id': 'i10',
+        'name': 'Blumenerde extra',
+        'amount': '',
+        'note': '',
+        'urgency': '',
+        'done': false,
+        'photo_ids': <String>[],
+      });
+      await pumpApp(tester, backend, MemoryTokens()..token = 't1');
+      await _openList(tester);
+      await tester.scrollUntilVisible(find.text('Eigene Artikel'), 200, scrollable: _list);
+      // The last category.
+      expect(shoppingCategories.last.label, 'Eigene Artikel');
+      await tester.tap(find.text('Eigene Artikel'));
+      await tester.pumpAndSettle();
+
+      // Open on the list: it stays.
+      await tester.longPress(_tile('Blumenerde extra').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Artikel löschen'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('steht auf der Liste'), findsOneWidget);
+      expect(backend.writes.containsKey('DELETE articles'), isFalse);
+      await tester.state<NavigatorState>(find.byType(Navigator).last).maybePop();
+      await tester.pumpAndSettle();
+
+      await tester.longPress(_tile('Gartenschlauch').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Artikel löschen'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('ganz gelöscht'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Löschen'));
+      await tester.pumpAndSettle();
+      expect(backend.writes['DELETE articles'], {'name': 'Gartenschlauch'});
       await disposeApp(tester);
     });
 
@@ -446,7 +501,11 @@ void main() {
       final backend = FakeBackend()
         ..shoppingLast = 's1'
         ..shoppingComments.add({
-          'id': 'c0', 'body': 'Bitte den guten Käse', 'created_at': '2026-11-22T09:00:00Z', 'author_id': 'u2', 'author_name': 'Ben',
+          'id': 'c0',
+          'body': 'Bitte den guten Käse',
+          'created_at': '2026-11-22T09:00:00Z',
+          'author_id': 'u2',
+          'author_name': 'Ben',
         });
       await pumpApp(tester, backend, MemoryTokens()..token = 't1');
       await tester.tap(find.text('Einkaufen'));

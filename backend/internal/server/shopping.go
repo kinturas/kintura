@@ -819,12 +819,56 @@ func (s *Server) putShoppingArticle(w http.ResponseWriter, r *http.Request, c re
 	return noContent(w)
 }
 
-// deleteShoppingArticle removes an article the circle made itself. Lists keep entries
-// of it; they show the first letter from then on.
+// deleteShoppingArticle removes an article the circle made itself, completely: with it go
+// its checked-off entries on all lists, so that "Zuletzt verwendet" cannot bring it back.
+// While it is open on a list it stays. It also clears what is left of one deleted before
+// this was so: entries whose article no longer exists. Catalog articles cannot go.
 func (s *Server) deleteShoppingArticle(w http.ResponseWriter, r *http.Request, c reqCtx) error {
-	res, err := s.db.ExecContext(r.Context(), `DELETE FROM shopping_articles WHERE family_id = ? AND name = ? AND custom = 1`,
-		c.familyID, r.URL.Query().Get("name"))
-	if err := requireAffected(res, err); err != nil {
+	ctx, name := r.Context(), r.URL.Query().Get("name")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var custom bool
+	switch err := tx.QueryRowContext(ctx, `SELECT custom FROM shopping_articles WHERE family_id = ? AND name = ?`,
+		c.familyID, name).Scan(&custom); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Gone already, maybe with entries left.
+	case err != nil:
+		return err
+	case !custom:
+		// Changed from the catalog: the catalog keeps it.
+		return errNotFound
+	}
+	var open int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM shopping_items WHERE family_id = ? AND name = ? AND done = 0`,
+		c.familyID, name).Scan(&open); err != nil {
+		return err
+	}
+	if open > 0 {
+		return fail(http.StatusConflict, "„"+name+"“ steht noch auf einer Einkaufsliste. Nimm ihn erst von der Liste, dann lässt er sich löschen.")
+	}
+	articles, err := tx.ExecContext(ctx, `DELETE FROM shopping_articles WHERE family_id = ? AND name = ? AND custom = 1`, c.familyID, name)
+	if err != nil {
+		return err
+	}
+	items, err := tx.ExecContext(ctx, `DELETE FROM shopping_items WHERE family_id = ? AND name = ?`, c.familyID, name)
+	if err != nil {
+		return err
+	}
+	deleted := int64(0)
+	for _, res := range []sql.Result{articles, items} {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		deleted += n
+	}
+	if deleted == 0 {
+		return errNotFound
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return noContent(w)

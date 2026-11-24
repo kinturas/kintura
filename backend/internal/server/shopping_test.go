@@ -231,6 +231,47 @@ func TestShoppingArticles(t *testing.T) {
 	// Only own articles can be deleted.
 	e.expect(404, "DELETE", base+"?name=Milch", token, nil)
 	e.expect(204, "DELETE", base+"?name="+url.QueryEscape("Übertopf"), token, nil)
+	e.expect(404, "DELETE", base+"?name="+url.QueryEscape("Übertopf"), token, nil)
+}
+
+// An own article goes completely, also from "Zuletzt verwendet", but not while it is open on a list.
+func TestShoppingArticleDeletedCompletely(t *testing.T) {
+	e := newEnv(t)
+	token := e.register("a@example.de", "A", "F")
+	fid := e.firstFamily(token)
+	base := "/api/families/" + fid + "/shopping"
+	week := e.expect(201, "POST", base+"/lists", token, obj{"name": "Woche"})["id"].(string)
+	hardware := e.expect(201, "POST", base+"/lists", token, obj{"name": "Baumarkt"})["id"].(string)
+	e.expect(201, "POST", base+"/articles", token, obj{"name": "Übertopf"})
+	article := base + "/articles?name=" + url.QueryEscape("Übertopf")
+	check := func(list string, done bool) {
+		e.expect(204, "POST", base+"/lists/"+list+"/items/check", token, obj{"name": "Übertopf", "done": done})
+	}
+
+	e.expect(201, "POST", base+"/lists/"+week+"/items", token, obj{"name": "Übertopf"})
+	e.expect(201, "POST", base+"/lists/"+week+"/items", token, obj{"name": "Milch"})
+	e.expect(201, "POST", base+"/lists/"+hardware+"/items", token, obj{"name": "Übertopf"})
+	check(week, true)
+	// Still open on the other list.
+	if got := e.expect(409, "DELETE", article, token, nil)["error"]; !strings.Contains(fmt.Sprint(got), "steht noch auf einer Einkaufsliste") {
+		t.Fatalf("error: %v", got)
+	}
+	check(hardware, true)
+	e.expect(204, "DELETE", article, token, nil)
+	if got := itemNames(e.shoppingItems(token, fid, week)); got != "Milch" {
+		t.Errorf("Woche: %s", got)
+	}
+	if got := itemNames(e.shoppingItems(token, fid, hardware)); got != "" {
+		t.Errorf("Baumarkt: %s", got)
+	}
+
+	// Left over from before: entries of an article that is gone go the same way.
+	e.expect(201, "POST", base+"/lists/"+week+"/items", token, obj{"name": "Gartenschlauch"})
+	e.expect(204, "POST", base+"/lists/"+week+"/items/check", token, obj{"name": "Gartenschlauch", "done": true})
+	e.expect(204, "DELETE", base+"/articles?name=Gartenschlauch", token, nil)
+	if got := itemNames(e.shoppingItems(token, fid, week)); got != "Milch" {
+		t.Errorf("Woche ohne Reste: %s", got)
+	}
 }
 
 func TestShoppingListDetailsAndCalendar(t *testing.T) {
