@@ -191,7 +191,9 @@ void main() {
 
   group('Über: nach Updates suchen', () {
     Future<void> pumpTile(WidgetTester tester, UpdateCheck check) => tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: UpdateTile(check: check))),
+      MaterialApp(
+        home: Scaffold(body: UpdateTile(check: check)),
+      ),
     );
 
     Future<void> tapAndWait(WidgetTester tester) async {
@@ -214,7 +216,7 @@ void main() {
       await pumpTile(tester, UpdateCheck(api: fake.api, version: '0.0.13+7', platform: 'android', client: fake.client));
       await tapAndWait(tester);
       expect(find.text('Version 0.0.14 (1) ist da.'), findsOneWidget);
-      expect(find.widgetWithText(FilledButton, 'Herunterladen'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Installieren'), findsOneWidget);
     });
 
     testWidgets('Entwicklungsversion', (tester) async {

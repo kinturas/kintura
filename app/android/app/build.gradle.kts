@@ -66,6 +66,8 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // FileProvider, for installing an update the app downloaded, see UpdateInstaller.kt.
+    implementation("androidx.core:core:1.16.0")
 }
 
 // Push messages of Aktuelles through Firebase Cloud Messaging. Without the file of the

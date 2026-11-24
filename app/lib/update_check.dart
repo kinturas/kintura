@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
 import 'reload_stub.dart' if (dart.library.js_interop) 'reload_web.dart';
+import 'update_installer.dart';
 
 /// Version of this build, in the form the server reports it (`1.2.3+45`).
 /// Set with `--dart-define=APP_VERSION=...`, empty in development.
@@ -52,10 +53,7 @@ Future<String> identifyApp(ApiClient api) async {
   } catch (_) {
     // Then the version given at build time, if any.
   }
-  api.clientHeaders = {
-    if (version.isNotEmpty) 'X-App-Version': version,
-    'X-App-Platform': appPlatform,
-  };
+  api.clientHeaders = {if (version.isNotEmpty) 'X-App-Version': version, 'X-App-Platform': appPlatform};
   return version;
 }
 
@@ -102,6 +100,7 @@ class UpdateCheck {
     this.repo = releasesRepo,
     this.interval = const Duration(minutes: 15),
     this.githubInterval = const Duration(minutes: 10),
+    this._installer,
   }) : platform = platform ?? appPlatform,
        _client = client ?? http.Client();
 
@@ -116,12 +115,17 @@ class UpdateCheck {
   final http.Client _client;
   final Duration interval;
   final Duration githubInterval;
+  UpdateInstaller? _installer;
 
   /// True once a newer version is there; it does not stop the app.
   final available = ValueNotifier(false);
 
   /// The newest build for this platform on GitHub, once known.
   final latest = ValueNotifier<AppRelease?>(null);
+
+  /// True while the new APK downloads; [progress] tells how far, null while not known.
+  final downloading = ValueNotifier(false);
+  final progress = ValueNotifier<double?>(null);
 
   /// True once this version is too old for the server: the app stops until updated.
   ValueNotifier<bool> get required => api.updateRequired;
@@ -133,6 +137,16 @@ class UpdateCheck {
   AppLifecycleListener? _lifecycle;
 
   bool get isWeb => platform == 'web';
+
+  /// Android downloads and installs the APK itself; Windows gets the installer in the browser.
+  bool get installsItself => platform == 'android';
+
+  /// What the buttons to update say.
+  String get updateLabel => isWeb
+      ? 'Neu laden'
+      : installsItself
+      ? 'Installieren'
+      : 'Herunterladen';
 
   /// Whether this build can tell at all if it is the newest.
   bool get canCheck => parseVersion(version) != null;
@@ -219,16 +233,50 @@ class UpdateCheck {
     }
   }
 
-  /// Reloads the web app, or downloads the newest build in the browser: the APK or the
-  /// installer, which installs over this version and keeps the data.
-  Future<void> update() async {
+  /// Reloads the web app, installs the newest APK on Android, or downloads the newest
+  /// installer in the browser. Either installs over this version and keeps the data.
+  /// Returns what to tell if that did not work.
+  Future<String?> update() async {
     if (isWeb) {
       reloadPage();
-      return;
+      return null;
     }
     if (latest.value == null) await check(force: true);
-    final url = latest.value?.downloadUrl ?? (_website.isNotEmpty ? _website : 'https://github.com/$repo/releases');
+    final newest = latest.value;
+    if (newest != null && installsItself) return _install(newest);
+    final url = newest?.downloadUrl ?? (_website.isNotEmpty ? _website : 'https://github.com/$repo/releases');
     await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    return null;
+  }
+
+  Future<String?> _install(AppRelease release) async {
+    if (downloading.value) return null;
+    downloading.value = true;
+    progress.value = null;
+    try {
+      final installer = _installer ??= UpdateInstaller();
+      final fileName = Uri.parse(release.downloadUrl).pathSegments.last;
+      final result = await installer.install(
+        release.downloadUrl,
+        fileName,
+        onProgress: (value) => progress.value = value,
+      );
+      return switch (result) {
+        InstallResult.started => null,
+        InstallResult.permission =>
+          'Erlaube Kintura in den Einstellungen, Apps zu installieren, und tippe dann noch einmal auf „Installieren“.',
+        InstallResult.failed => 'Die neue Version ließ sich nicht herunterladen. Versuch es später noch einmal.',
+      };
+    } finally {
+      downloading.value = false;
+    }
+  }
+
+  /// Runs [update] from a button and tells in a snack bar if that did not work.
+  Future<void> updateFrom(BuildContext context) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final message = await update();
+    if (message != null) messenger?.showSnackBar(SnackBar(content: Text(message)));
   }
 
   void dispose() {
@@ -236,6 +284,8 @@ class UpdateCheck {
     _lifecycle?.dispose();
     available.dispose();
     latest.dispose();
+    downloading.dispose();
+    progress.dispose();
   }
 }
 
@@ -250,11 +300,12 @@ class UpdateBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([check.available, check.required, check.latest]),
+      listenable: Listenable.merge([check.available, check.required, check.latest, check.downloading, check.progress]),
       builder: (context, _) {
         if (check.required.value) return _UpdateRequiredPage(check: check);
         final available = check.available.value;
         final newest = check.latest.value;
+        final downloading = check.downloading.value;
         final scheme = Theme.of(context).colorScheme;
         return Column(
           children: [
@@ -271,16 +322,29 @@ class UpdateBanner extends StatelessWidget {
                         Icon(Icons.system_update_alt, color: scheme.onPrimaryContainer),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: Text(
-                            newest == null || check.isWeb
-                                ? 'Eine neue Version von Kintura ist da.'
-                                : 'Kintura ${newest.name} ist da.',
-                            style: TextStyle(color: scheme.onPrimaryContainer),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                downloading
+                                    ? 'Neue Version wird heruntergeladen …'
+                                    : newest == null || check.isWeb
+                                    ? 'Eine neue Version von Kintura ist da.'
+                                    : 'Kintura ${newest.name} ist da.',
+                                style: TextStyle(color: scheme.onPrimaryContainer),
+                              ),
+                              if (downloading)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: LinearProgressIndicator(value: check.progress.value),
+                                ),
+                            ],
                           ),
                         ),
                         TextButton(
-                          onPressed: check.update,
-                          child: Text(check.isWeb ? 'Neu laden' : 'Herunterladen'),
+                          onPressed: downloading ? null : () => check.updateFrom(context),
+                          child: Text(check.updateLabel),
                         ),
                       ],
                     ),
@@ -331,12 +395,21 @@ class _UpdateRequiredPage extends StatelessWidget {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 24),
-                  FilledButton.icon(
-                    key: const Key('update-now'),
-                    onPressed: check.update,
-                    icon: Icon(check.isWeb ? Icons.refresh : Icons.download),
-                    label: Text(check.isWeb ? 'Neu laden' : 'Neue Version herunterladen'),
-                  ),
+                  if (check.downloading.value)
+                    SizedBox(width: 240, child: LinearProgressIndicator(value: check.progress.value))
+                  else
+                    FilledButton.icon(
+                      key: const Key('update-now'),
+                      onPressed: () => check.updateFrom(context),
+                      icon: Icon(check.isWeb ? Icons.refresh : Icons.download),
+                      label: Text(
+                        check.isWeb
+                            ? 'Neu laden'
+                            : check.installsItself
+                            ? 'Neue Version installieren'
+                            : 'Neue Version herunterladen',
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -396,22 +469,38 @@ class _UpdateTileState extends State<UpdateTile> {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      key: const Key('about-update'),
-      leading: const Icon(Icons.system_update_alt),
-      title: const Text('Nach Updates suchen'),
-      subtitle: Text(_text),
-      enabled: _check.canCheck,
-      onTap: _checking ? null : _run,
-      trailing: _checking
-          ? const SizedBox.square(dimension: 24, child: CircularProgressIndicator(strokeWidth: 2))
-          : _status == UpdateStatus.available
-          ? FilledButton(
-              key: const Key('about-update-download'),
-              onPressed: _check.update,
-              child: Text(_check.isWeb ? 'Neu laden' : 'Herunterladen'),
-            )
-          : null,
+    return ListenableBuilder(
+      listenable: Listenable.merge([_check.downloading, _check.progress]),
+      builder: (context, _) {
+        if (_check.downloading.value) {
+          return ListTile(
+            key: const Key('about-update'),
+            leading: const Icon(Icons.system_update_alt),
+            title: const Text('Neue Version wird heruntergeladen …'),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: LinearProgressIndicator(value: _check.progress.value),
+            ),
+          );
+        }
+        return ListTile(
+          key: const Key('about-update'),
+          leading: const Icon(Icons.system_update_alt),
+          title: const Text('Nach Updates suchen'),
+          subtitle: Text(_text),
+          enabled: _check.canCheck,
+          onTap: _checking ? null : _run,
+          trailing: _checking
+              ? const SizedBox.square(dimension: 24, child: CircularProgressIndicator(strokeWidth: 2))
+              : _status == UpdateStatus.available
+              ? FilledButton(
+                  key: const Key('about-update-download'),
+                  onPressed: () => _check.updateFrom(context),
+                  child: Text(_check.updateLabel),
+                )
+              : null,
+        );
+      },
     );
   }
 }

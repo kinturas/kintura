@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Where the app keeps a downloaded update until it is installed, see UpdateInstaller.kt. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

@@ -35,6 +35,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        UpdateInstaller.register(this, flutterEngine)
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "de.kintura.app/push")
         this.channel = channel
         channel.setMethodCallHandler { call, result ->

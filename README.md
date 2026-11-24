@@ -43,8 +43,10 @@ unverträglich), wird sie dort auf die Version des anstehenden Releases gesetzt.
 Ohne Sperre zeigen die Apps einen Hinweis „Eine neue Version von Kintura ist da“: die Web-App, sobald der Server eine
 andere Version hat, Android und Windows, sobald es auf GitHub einen neueren Release `android-v…` bzw. `windows-v…` mit
 APK bzw. `…-windows-setup.exe` gibt. Sie fragen dafür die GitHub-API öffentlich und höchstens alle 10 Minuten
-(`--dart-define=RELEASES_REPO=owner/name` für einen Fork, Standard `kinturas/kintura`). „Herunterladen“ öffnet die Datei im
-Browser, sie wird über die alte Version installiert. Unter Profil, Über lässt sich mit „Nach Updates suchen“ auch von Hand prüfen.
+(`--dart-define=RELEASES_REPO=owner/name` für einen Fork, Standard `kinturas/kintura`). Auf Android lädt „Installieren“ die APK
+in der App herunter und öffnet den Installationsdialog von Android (Berechtigung `REQUEST_INSTALL_PACKAGES`, beim ersten
+Mal fragt Android, ob Kintura Apps installieren darf). Auf Windows öffnet „Herunterladen“ den Installer im Browser.
+Beides installiert über die alte Version, die Daten bleiben. Unter Profil, Über lässt sich mit „Nach Updates suchen“ auch von Hand prüfen.
 
 ## Docker
 
